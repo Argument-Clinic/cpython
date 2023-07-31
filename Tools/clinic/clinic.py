@@ -2845,10 +2845,10 @@ class CConverter(metaclass=CConverterAutoRegister):
     if not TYPE_CHECKING:
         def __getattr__(self, attr):
             if attr == "function":
-                raise AttributeError(
+                fail(
                     f"{self.__class__.__name__!r} object has no attribute 'function'.\n"
                     f"Note: accessing self.function inside converter_init is disallowed!"
-                ) from None
+                )
             return super().__getattr__(attr)
 
     def converter_init(self) -> None:
