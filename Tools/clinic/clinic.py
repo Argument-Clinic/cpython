@@ -37,6 +37,7 @@ from collections.abc import (
 )
 from types import FunctionType, NoneType
 from typing import (
+    TYPE_CHECKING,
     Any,
     Final,
     Literal,
@@ -2837,6 +2838,21 @@ class CConverter(metaclass=CConverterAutoRegister):
         # (That breaks if we get cloned.)
         self.converter_init(**kwargs)
         self.function = function
+
+    # mypy will assume arbitrary access is okay for a class with a __getattr__ method,
+    # and that's not what we want,
+    # so put it inside an `if not TYPE_CHECKING` block
+    if not TYPE_CHECKING:
+        def __getattr__(self, attr):
+            try:
+                return super().__getattr__(attr)
+            except AttributeError as e:
+                if attr == "function":
+                    e.add_note(
+                        "Note: accessing self.function "
+                        "inside converter_init is disallowed!"
+                    )
+                raise
 
     def converter_init(self) -> None:
         pass
