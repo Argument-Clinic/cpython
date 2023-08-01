@@ -5759,8 +5759,17 @@ def run_clinic(parser: argparse.ArgumentParser, ns: argparse.Namespace) -> None:
 def main(argv: list[str] | None = None) -> NoReturn:
     parser = create_cli()
     args = parser.parse_args(argv)
-    run_clinic(parser, args)
-    sys.exit(0)
+    try:
+        run_clinic(parser, args)
+    except ClinicError as exc:
+        msg = textwrap.dedent(f"""\
+            Error in file {exc.filename!r} on line {exc.lineno}:
+            {exc}
+        """)
+        sys.stderr.write(str(exc))
+        sys.exit(1)
+    else:
+        sys.exit(0)
 
 
 if __name__ == "__main__":
