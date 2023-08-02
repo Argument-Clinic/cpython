@@ -804,6 +804,15 @@ class CLanguage(Language):
         static {impl_return_type}
         {c_basename}_impl({impl_parameters})
     """)
+    METHODDEF_PROTOTYPE_DEFINE = normalize_snippet(r"""
+        #define {methoddef_name}    \
+            {{"{name}", {methoddef_cast}{c_basename}{methoddef_cast_end}, {methoddef_flags}, {c_basename}__doc__}},
+    """)
+    METHODDEF_PROTOTYPE_IFNDEF = normalize_snippet("""
+        #ifndef {methoddef_name}
+            #define {methoddef_name}
+        #endif /* !defined({methoddef_name}) */
+    """)
 
     def __init__(self, filename: str) -> None:
         super().__init__(filename)
@@ -910,11 +919,7 @@ class CLanguage(Language):
         # methoddef_ifndef
 
         return_value_declaration = "PyObject *return_value = NULL;"
-
-        methoddef_define = normalize_snippet("""
-            #define {methoddef_name}    \\
-                {{"{name}", {methoddef_cast}{c_basename}{methoddef_cast_end}, {methoddef_flags}, {c_basename}__doc__}},
-            """)
+        methoddef_define = self.METHODDEF_PROTOTYPE_DEFINE
         if new_or_init and not f.docstring:
             docstring_prototype = docstring_definition = ''
         else:
@@ -1327,12 +1332,7 @@ class CLanguage(Language):
 
             if methoddef_define and f.full_name not in clinic.ifndef_symbols:
                 clinic.ifndef_symbols.add(f.full_name)
-                methoddef_ifndef = normalize_snippet("""
-                    #ifndef {methoddef_name}
-                        #define {methoddef_name}
-                    #endif /* !defined({methoddef_name}) */
-                    """)
-
+                methoddef_ifndef = self.METHODDEF_PROTOTYPE_IFNDEF
 
         # add ';' to the end of parser_prototype and impl_prototype
         # (they mustn't be None, but they could be an empty string.)
