@@ -4514,10 +4514,6 @@ class IndentStack:
         return line[indent:]
 
 
-class StateKeeper(Protocol):
-    def __call__(self, function: Function | None, line: str) -> Function | None: ...
-
-
 ConverterArgs = dict[str, Any]
 
 class ParamState(enum.IntEnum):
@@ -4551,8 +4547,18 @@ class ParamState(enum.IntEnum):
     RIGHT_SQUARE_AFTER = 6
 
 
+class DSLParserState(enum.Enum):
+    DSL_START                   = enum.auto()
+    MODULENAME_NAME             = enum.auto()
+    PARAMETERS_START            = enum.auto()
+    PARAMETER                   = enum.auto()
+    PARAMETER_DOCSTRING_START   = enum.auto()
+    PARAMETER_DOCSTRING         = enum.auto()
+    FUNCTION_DOCSTRING          = enum.auto()
+
+
 class DSLParser:
-    state: StateKeeper
+    state: DSLParserState
     keyword_only: bool
     positional_only: bool
     deprecated_positional: VersionTuple | None
@@ -4587,7 +4593,7 @@ class DSLParser:
         self.reset()
 
     def reset(self) -> None:
-        self.state = self.state_dsl_start
+        self.state = DSLParserState.DSL_START
         self.keyword_only = False
         self.positional_only = False
         self.deprecated_positional = None
@@ -4755,7 +4761,7 @@ class DSLParser:
                 fail(f'Tab characters are illegal in the Clinic DSL: {line!r}',
                      line_number=block_start)
             try:
-                function = self.state(function, line)
+                function = self.handle_line(function, line)
             except ClinicError as exc:
                 exc.lineno = line_number
                 raise
@@ -4768,11 +4774,43 @@ class DSLParser:
                 fail("'preserve' only works for blocks that don't produce any output!")
             block.output = self.saved_output
 
+    def handle_line(self, function: Function | None, line: str) -> Function | None:
+        match function:
+            case None:
+                match self.state:
+                    case DSLParserState.DSL_START:
+                        return self.handle_dsl_start(line)
+                    case DSLParserState.MODULENAME_NAME:
+                        return self.handle_modulename_name(line)
+                    case _ as state:
+                        raise AssertionError(
+                            f"self.state is {state!r} but function is still None!"
+                        )
+            case Function():
+                match self.state:
+                    case DSLParserState.PARAMETERS_START:
+                        return self.handle_parameters_start(function, line)
+                    case DSLParserState.PARAMETER:
+                        return self.handle_parameter(function, line)
+                    case DSLParserState.PARAMETER_DOCSTRING_START:
+                        return self.handle_parameter_docstring_start(function, line)
+                    case DSLParserState.PARAMETER_DOCSTRING:
+                        return self.handle_parameter_docstring(function, line)
+                    case DSLParserState.FUNCTION_DOCSTRING:
+                        return self.handle_function_docstring(function, line)
+                    case _ as state:
+                        raise AssertionError(f"Unexpected state: {state!r}")
+            case _:
+                raise AssertionError(
+                    f"Expected function to be a Function or None, "
+                    f"got {type(function)!r}"
+                )
+
     def in_docstring(self) -> bool:
         """Return true if we are processing a docstring."""
         return self.state in {
-            self.state_parameter_docstring,
-            self.state_function_docstring,
+            DSLParserState.PARAMETER_DOCSTRING,
+            DSLParserState.FUNCTION_DOCSTRING,
         }
 
     def valid_line(self, line: str) -> bool:
@@ -4787,21 +4825,7 @@ class DSLParser:
 
         return True
 
-    def next(
-            self,
-            state: StateKeeper,
-            *,
-            function: Function | None,
-            line: str | None = None,
-    ) -> Function | None:
-        self.state = state
-        if line is not None:
-            function = self.state(function=function, line=line)
-        return function
-
-    def state_dsl_start(self, function: Function | None, line: str) -> Function | None:
-        assert function is None
-
+    def handle_dsl_start(self, line: str) -> Function | None:
         if not self.valid_line(line):
             return None
 
@@ -4816,11 +4840,10 @@ class DSLParser:
                 fail(str(e))
             return None
 
-        return self.next(self.state_modulename_name, function=None, line=line)
+        self.state = DSLParserState.MODULENAME_NAME
+        return self.handle_modulename_name(line)
 
-    def state_modulename_name(
-        self, function: Function | None, line: str
-    ) -> Function | None:
+    def handle_modulename_name(self, line: str) -> Function | None:
         # looking for declaration, which establishes the leftmost column
         # line should be
         #     modulename.fnname [as c_basename] [-> return annotation]
@@ -4837,7 +4860,6 @@ class DSLParser:
         # this line is permitted to start with whitespace.
         # we'll call this number of spaces F (for "function").
 
-        assert function is None
         assert self.valid_line(line)
         self.indent.infer(line)
 
@@ -4878,7 +4900,8 @@ class DSLParser:
                 )
                 self.block.signatures.append(function)
                 (cls or module).functions.append(function)
-                return self.next(self.state_function_docstring, function=function)
+                self.state = DSLParserState.FUNCTION_DOCSTRING
+                return function
 
         line, _, returns = line.partition('->')
         returns = returns.strip()
@@ -4956,7 +4979,8 @@ class DSLParser:
         function.parameters[name] = p_self
 
         (cls or module).functions.append(function)
-        return self.next(self.state_parameters_start, function=function)
+        self.state = DSLParserState.PARAMETERS_START
+        return function
 
     # Now entering the parameters section.  The rules, formally stated:
     #
@@ -5013,18 +5037,16 @@ class DSLParser:
     # separate boolean state variables.)  The states are defined in the
     # ParamState class.
 
-    def state_parameters_start(self, function: Function | None, line: str) -> Function:
-        assert function is not None
-
+    def handle_parameters_start(self, function: Function, line: str) -> Function:
         if self.valid_line(line):
             # if this line is not indented, we have no parameters
             if not self.indent.infer(line):
-                self.next(
-                    self.state_function_docstring, function=function, line=line
-                )
+                self.state = DSLParserState.FUNCTION_DOCSTRING
+                self.handle_function_docstring(function=function, line=line)
             else:
                 self.parameter_continuation = ''
-                self.next(self.state_parameter, function=function, line=line)
+                self.state = DSLParserState.PARAMETER
+                self.handle_parameter(function=function, line=line)
 
         return function
 
@@ -5037,11 +5059,7 @@ class DSLParser:
             for p in function.parameters.values():
                 p.group = -p.group
 
-    def state_parameter(
-        self, function: Function | None, line: str
-    ) -> Function:
-        assert function is not None
-
+    def handle_parameter(self, function: Function, line: str) -> Function:
         if not self.valid_line(line):
             return function
 
@@ -5053,17 +5071,13 @@ class DSLParser:
         indent = self.indent.infer(line)
         if indent == -1:
             # we outdented, must be to definition column
-            self.next(
-                self.state_function_docstring, function=function, line=line
-            )
-            return function
+            self.state = DSLParserState.FUNCTION_DOCSTRING
+            return self.handle_function_docstring(function=function, line=line)
 
         if indent == 1:
             # we indented, must be to new parameter docstring column
-            self.next(
-                self.state_parameter_docstring_start, function=function, line=line
-            )
-            return function
+            self.state = DSLParserState.PARAMETER_DOCSTRING_START
+            return self.handle_parameter_docstring_start(function=function, line=line)
 
         line = line.rstrip()
         if line.endswith('\\'):
@@ -5473,15 +5487,14 @@ class DSLParser:
                      "positional-only parameters, which is unsupported.")
             p.kind = inspect.Parameter.POSITIONAL_ONLY
 
-    def state_parameter_docstring_start(
-        self, function: Function | None, line: str
+    def handle_parameter_docstring_start(
+        self, function: Function, line: str
     ) -> Function:
-        assert function is not None
         assert self.indent.margin is not None, "self.margin.infer() has not yet been called to set the margin"
         self.parameter_docstring_indent = len(self.indent.margin)
         assert self.indent.depth == 3
-        self.next(self.state_parameter_docstring, function=function, line=line)
-        return function
+        self.state = DSLParserState.PARAMETER_DOCSTRING
+        return self.handle_parameter_docstring(function=function, line=line)
 
     def docstring_append(self, obj: Function | Parameter, line: str) -> None:
         """Add a rstripped line to the current docstring."""
@@ -5500,11 +5513,9 @@ class DSLParser:
     # every line of the docstring must start with at least F spaces,
     # where F > P.
     # these F spaces will be stripped.
-    def state_parameter_docstring(
-        self, function: Function | None, line: str
+    def handle_parameter_docstring(
+        self, function: Function, line: str
     ) -> Function:
-        assert function is not None
-
         if not self.valid_line(line):
             return function
 
@@ -5514,13 +5525,11 @@ class DSLParser:
             assert self.indent.depth < 3
             if self.indent.depth == 2:
                 # back to a parameter
-                self.next(self.state_parameter, function=function, line=line)
-                return function
+                self.state = DSLParserState.PARAMETER
+                return self.handle_parameter(function=function, line=line)
             assert self.indent.depth == 1
-            self.next(
-                self.state_function_docstring, function=function, line=line
-            )
-            return function
+            self.state = DSLParserState.FUNCTION_DOCSTRING
+            return self.handle_function_docstring(function=function, line=line)
 
         assert function.parameters
         last_param = next(reversed(function.parameters.values()))
@@ -5528,11 +5537,7 @@ class DSLParser:
         return function
 
     # the final stanza of the DSL is the docstring.
-    def state_function_docstring(
-        self, function: Function | None, line: str
-    ) -> Function:
-        assert function is not None
-
+    def handle_function_docstring(self, function: Function, line: str) -> Function:
         if self.group:
             fail(f"Function {function.name!r} has a ']' without a matching '['.")
 
