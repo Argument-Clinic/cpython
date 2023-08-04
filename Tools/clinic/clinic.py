@@ -4761,7 +4761,7 @@ class DSLParser:
                 fail(f'Tab characters are illegal in the Clinic DSL: {line!r}',
                      line_number=block_start)
             try:
-                function = self.handle_line(function, line)
+                function = self.handle_line(function=function, line=line)
             except ClinicError as exc:
                 exc.lineno = line_number
                 raise
@@ -4774,7 +4774,16 @@ class DSLParser:
                 fail("'preserve' only works for blocks that don't produce any output!")
             block.output = self.saved_output
 
-    def handle_line(self, function: Function | None, line: str) -> Function | None:
+    def handle_line(
+        self,
+        /,
+        *,
+        function: Function | None,
+        line: str,
+        new_state: DSLParserState | None = None
+    ) -> Function | None:
+        if new_state:
+            self.state = new_state
         match function:
             case None:
                 match self.state:
@@ -4840,10 +4849,13 @@ class DSLParser:
                 fail(str(e))
             return None
 
-        self.state = DSLParserState.MODULENAME_NAME
-        return self.handle_modulename_name(line)
+        return self.handle_line(
+            function=None,
+            line=line,
+            new_state=DSLParserState.MODULENAME_NAME
+        )
 
-    def handle_modulename_name(self, line: str) -> Function | None:
+    def handle_modulename_name(self, line: str) -> Function:
         # looking for declaration, which establishes the leftmost column
         # line should be
         #     modulename.fnname [as c_basename] [-> return annotation]
@@ -5041,13 +5053,16 @@ class DSLParser:
         if self.valid_line(line):
             # if this line is not indented, we have no parameters
             if not self.indent.infer(line):
-                self.state = DSLParserState.FUNCTION_DOCSTRING
-                self.handle_function_docstring(function=function, line=line)
+                self.handle_line(
+                    function=function,
+                    line=line,
+                    new_state=DSLParserState.FUNCTION_DOCSTRING
+                )
             else:
                 self.parameter_continuation = ''
-                self.state = DSLParserState.PARAMETER
-                self.handle_parameter(function=function, line=line)
-
+                self.handle_line(
+                    function=function, line=line, new_state=DSLParserState.PARAMETER
+                )
         return function
 
     def to_required(self, function: Function) -> None:
@@ -5071,13 +5086,19 @@ class DSLParser:
         indent = self.indent.infer(line)
         if indent == -1:
             # we outdented, must be to definition column
-            self.state = DSLParserState.FUNCTION_DOCSTRING
-            return self.handle_function_docstring(function=function, line=line)
+            self.handle_line(
+                function=function, line=line, new_state=DSLParserState.FUNCTION_DOCSTRING
+            )
+            return function
 
         if indent == 1:
             # we indented, must be to new parameter docstring column
-            self.state = DSLParserState.PARAMETER_DOCSTRING_START
-            return self.handle_parameter_docstring_start(function=function, line=line)
+            self.handle_line(
+                function=function,
+                line=line,
+                new_state=DSLParserState.PARAMETER_DOCSTRING_START
+            )
+            return function
 
         line = line.rstrip()
         if line.endswith('\\'):
@@ -5492,8 +5513,10 @@ class DSLParser:
         assert self.indent.margin is not None, "self.margin.infer() has not yet been called to set the margin"
         self.parameter_docstring_indent = len(self.indent.margin)
         assert self.indent.depth == 3
-        self.state = DSLParserState.PARAMETER_DOCSTRING
-        return self.handle_parameter_docstring(function=function, line=line)
+        self.handle_line(
+            function=function, line=line, new_state=DSLParserState.PARAMETER_DOCSTRING
+        )
+        return function
 
     def docstring_append(self, obj: Function | Parameter, line: str) -> None:
         """Add a rstripped line to the current docstring."""
@@ -5524,11 +5547,15 @@ class DSLParser:
             assert self.indent.depth < 3
             if self.indent.depth == 2:
                 # back to a parameter
-                self.state = DSLParserState.PARAMETER
-                return self.handle_parameter(function=function, line=line)
-            assert self.indent.depth == 1
-            self.state = DSLParserState.FUNCTION_DOCSTRING
-            return self.handle_function_docstring(function=function, line=line)
+                self.handle_line(
+                    function=function, line=line, new_state=DSLParserState.PARAMETER
+                )
+            else:
+                assert self.indent.depth == 1
+                self.handle_line(
+                    function=function, line=line, new_state=DSLParserState.FUNCTION_DOCSTRING
+                )
+            return function
 
         assert function.parameters
         last_param = next(reversed(function.parameters.values()))
