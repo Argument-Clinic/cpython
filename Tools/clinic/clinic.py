@@ -5822,7 +5822,7 @@ class DSLParser:
         if self.deprecated_positional:
             check_remaining("* [from ...]", lambda p: not p.deprecated_positional)
 
-        function.docstring = self.format_docstring()
+        function.docstring = self.format_docstring(function)
 
 
 # maps strings to callables.
