@@ -3049,10 +3049,10 @@ class CConverter(metaclass=CConverterAutoRegister):
         pass
 
     def parse_arg(self, argname: str, displayname: str) -> str | None:
-        paramname = self.parser_name
+        paramname, converter = self.parser_name, self.converter
         if self.format_unit == 'O&':
             return f"""
-                if (!{self.converter}({argname}, &{paramname})) {{{{
+                if (!{converter}({argname}, &{paramname})) {{{{
                     goto exit;
                 }}}}
             """
