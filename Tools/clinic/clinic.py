@@ -5491,7 +5491,7 @@ class DSLParser:
     @staticmethod
     def format_docstring_parameters(params: list[Parameter]) -> str:
         """Create substitution text for {parameters}"""
-        text, add, output = _text_accumulator()
+        add, output = text_accumulator()
         docstrings = [p.render_docstring() for p in params if p.docstring]
         for docstring in docstrings:
             add(docstring)
