@@ -5116,10 +5116,8 @@ class DSLParser:
             case ParamState.GROUP_AFTER | ParamState.OPTIONAL:
                 pass
             case st:
-                fail(
-                    f"Function {function.name} has an unsupported group configuration. "
-                    f"(Unexpected state {st}.a)"
-                )
+                fail(f"Function {function.name} has an unsupported group configuration. "
+                     f"(Unexpected state {st}.a)")
 
         # handle "as" for  parameters too
         c_name = None
@@ -5174,6 +5172,7 @@ class DSLParser:
         if function_args.kwarg:
             fail(f"Function {function.name!r} has an "
                  f"invalid parameter declaration (**kwargs?): {line!r}")
+
         if function_args.vararg:
             is_vararg = True
             parameter = function_args.vararg
