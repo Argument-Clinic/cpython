@@ -5342,7 +5342,19 @@ class DSLParser:
         assert self.function is not None
         if not self.valid_line(line):
             return
+
         if line.strip() != "":
+            # Enforce the summary line!
+            # The first line of a docstring should be a summary of the function.
+            # It should fit on one line (80 columns? 79 maybe?) and be a paragraph
+            # by itself.
+            #
+            # Argument Clinic enforces the following rule:
+            #  * either the docstring is empty,
+            #  * or it must have a summary line.
+            #
+            # Guido said Clinic should enforce this:
+            # http://mail.python.org/pipermail/python-dev/2013-June/127110.html
             fail(f"Docstring for {self.function.full_name!r} does not have a summary line!\n"
                  "Every non-blank function docstring must start with "
                  "a single line summary followed by an empty line.")
@@ -5560,19 +5572,6 @@ class DSLParser:
 
         docstring = f.docstring.rstrip()
         lines = [line.rstrip() for line in docstring.split('\n')]
-
-        # Enforce the summary line!
-        # The first line of a docstring should be a summary of the function.
-        # It should fit on one line (80 columns? 79 maybe?) and be a paragraph
-        # by itself.
-        #
-        # Argument Clinic enforces the following rule:
-        #  * either the docstring is empty,
-        #  * or it must have a summary line.
-        #
-        # Guido said Clinic should enforce this:
-        # http://mail.python.org/pipermail/python-dev/2013-June/127110.html
-
         if len(lines) == 1:
             # the docstring is only one line right now--the summary line.
             # add an empty line after the summary line so we have space
