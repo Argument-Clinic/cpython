@@ -1921,7 +1921,7 @@ class ClinicParserTest(TestCase):
             docstring1
             docstring2
         """
-        self.expect_failure(block, err, lineno=0)
+        self.expect_failure(block, err, lineno=3)
 
     def test_state_func_docstring_only_one_param_template(self):
         err = "You may not specify {parameters} more than once in a docstring!"

@@ -4631,7 +4631,8 @@ class DSLParser:
         """Return true if we are processing a docstring."""
         return self.state in {
             self.state_parameter_docstring,
-            self.state_function_docstring,
+            self.state_function_docstring_separator,
+            self.state_function_docstring_body,
         }
 
     def valid_line(self, line: str) -> bool:
@@ -4732,7 +4733,7 @@ class DSLParser:
                 self.function = function
                 self.block.signatures.append(function)
                 (cls or module).functions.append(function)
-                self.next(self.state_function_docstring)
+                self.next(self.state_function_docstring_start)
                 return
 
         line, _, returns = line.partition('->')
@@ -4866,7 +4867,7 @@ class DSLParser:
 
         # if this line is not indented, we have no parameters
         if not self.indent.infer(line):
-            return self.next(self.state_function_docstring, line)
+            return self.next(self.state_function_docstring_start, line)
 
         self.parameter_continuation = ''
         return self.next(self.state_parameter, line)
@@ -4896,7 +4897,7 @@ class DSLParser:
         indent = self.indent.infer(line)
         if indent == -1:
             # we outdented, must be to definition column
-            return self.next(self.state_function_docstring, line)
+            return self.next(self.state_function_docstring_start, line)
 
         if indent == 1:
             # we indented, must be to new parameter docstring column
@@ -5317,22 +5318,53 @@ class DSLParser:
                 # back to a parameter
                 return self.next(self.state_parameter, line)
             assert self.indent.depth == 1
-            return self.next(self.state_function_docstring, line)
+            return self.next(self.state_function_docstring_start, line)
 
         assert self.function and self.function.parameters
         last_param = next(reversed(self.function.parameters.values()))
         self.docstring_append(last_param, line)
 
     # the final stanza of the DSL is the docstring.
-    def state_function_docstring(self, line: str) -> None:
+    def state_function_docstring_start(self, line: str) -> None:
         assert self.function is not None
-
         if self.group:
             fail(f"Function {self.function.name!r} has a ']' without a matching '['.")
+        return self.next(self.state_function_docstring_summary, line)
 
+    def state_function_docstring_summary(self, line: str) -> None:
+        assert self.function is not None
+        if not self.valid_line(line):
+            return
+        self.docstring_append(self.function, line)
+        self.next(self.state_function_docstring_separator)
+
+    def state_function_docstring_separator(self, line: str) -> None:
+        assert self.function is not None
         if not self.valid_line(line):
             return
 
+        if line.strip() != "":
+            # Enforce the summary line!
+            # The first line of a docstring should be a summary of the function.
+            # It should fit on one line (80 columns? 79 maybe?) and be a paragraph
+            # by itself.
+            #
+            # Argument Clinic enforces the following rule:
+            #  * either the docstring is empty,
+            #  * or it must have a summary line.
+            #
+            # Guido said Clinic should enforce this:
+            # http://mail.python.org/pipermail/python-dev/2013-June/127110.html
+            fail(f"Docstring for {self.function.full_name!r} does not have a summary line!\n"
+                 "Every non-blank function docstring must start with "
+                 "a single line summary followed by an empty line.")
+        self.docstring_append(self.function, line)
+        self.next(self.state_function_docstring_body)
+
+    def state_function_docstring_body(self, line: str) -> None:
+        assert self.function is not None
+        if not self.valid_line(line):
+            return
         self.docstring_append(self.function, line)
 
     def format_docstring(self) -> str:
@@ -5540,25 +5572,7 @@ class DSLParser:
 
         docstring = f.docstring.rstrip()
         lines = [line.rstrip() for line in docstring.split('\n')]
-
-        # Enforce the summary line!
-        # The first line of a docstring should be a summary of the function.
-        # It should fit on one line (80 columns? 79 maybe?) and be a paragraph
-        # by itself.
-        #
-        # Argument Clinic enforces the following rule:
-        #  * either the docstring is empty,
-        #  * or it must have a summary line.
-        #
-        # Guido said Clinic should enforce this:
-        # http://mail.python.org/pipermail/python-dev/2013-June/127110.html
-
-        if len(lines) >= 2:
-            if lines[1]:
-                fail(f"Docstring for {f.full_name!r} does not have a summary line!\n"
-                     "Every non-blank function docstring must start with "
-                     "a single line summary followed by an empty line.")
-        elif len(lines) == 1:
+        if len(lines) == 1:
             # the docstring is only one line right now--the summary line.
             # add an empty line after the summary line so we have space
             # between it and the {parameters} we're about to add.
