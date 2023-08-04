@@ -3150,23 +3150,21 @@ class bool_converter(CConverter):
 
     def parse_arg(self, argname: str, displayname: str) -> str | None:
         paramname = self.parser_name
-        match self.format_unit:
-            case 'i':
-                return f"""
-                    {paramname} = _PyLong_AsInt({argname});
-                    if ({paramname} == -1 && PyErr_Occurred()) {{{{
-                        goto exit;
-                    }}}}
+        if self.format_unit == 'i':
+            return f"""
+                {paramname} = _PyLong_AsInt({argname});
+                if ({paramname} == -1 && PyErr_Occurred()) {{{{
+                    goto exit;
+                }}}}
                 """
-            case 'p':
-                return f"""
-                    {paramname} = PyObject_IsTrue({argname});
-                    if ({paramname} < 0) {{{{
-                        goto exit;
-                    }}}}
+        elif self.format_unit == 'p':
+            return f"""
+                {paramname} = PyObject_IsTrue({argname});
+                if ({paramname} < 0) {{{{
+                    goto exit;
+                }}}}
                 """
-            case _:
-                return super().parse_arg(argname, displayname)
+        return super().parse_arg(argname, displayname)
 
 
 class defining_class_converter(CConverter):
