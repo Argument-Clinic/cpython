@@ -3049,13 +3049,13 @@ class CConverter(metaclass=CConverterAutoRegister):
         pass
 
     def parse_arg(self, argname: str, displayname: str) -> str | None:
+        paramname = self.parser_name
         if self.format_unit == 'O&':
             return f"""
-                if (!{self.converter}({argname}, &{self.parser_name})) {{{{
+                if (!{self.converter}({argname}, &{paramname})) {{{{
                     goto exit;
                 }}}}
             """
-        paramname = self.parser_name
         if self.format_unit == 'O!':
             cast = '(%s)' % self.type if self.type != 'PyObject *' else ''
             if self.subclass_of in type_checks:
