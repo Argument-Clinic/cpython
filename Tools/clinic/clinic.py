@@ -4422,6 +4422,24 @@ class ParamState(enum.IntEnum):
     RIGHT_SQUARE_AFTER = 6
 
 
+def parse_converter(annotation: ast.expr | None) -> tuple[str, bool, ConverterArgs]:
+    match annotation:
+        case ast.Constant(value=str() as value):
+            return value, True, {}
+        case ast.Name(name):
+            return name, False, {}
+        case ast.Call(func=ast.Name(name)):
+            symbols = globals()
+            kwargs: ConverterArgs = {}
+            for node in annotation.keywords:
+                if not isinstance(node.arg, str):
+                    fail("Cannot use a kwarg splat in a function-call annotation")
+                kwargs[node.arg] = eval_ast_expr(node.value, symbols)
+            return name, False, kwargs
+        case _:
+            fail("Annotations must be either a name, a function call, or a string.")
+
+
 class DSLParser:
     function: Function | None
     state: StateKeeper
@@ -4755,7 +4773,7 @@ class DSLParser:
             function_node = module_node.body[0]
             assert isinstance(function_node, ast.FunctionDef)
             try:
-                name, legacy, kwargs = self.parse_converter(function_node.returns)
+                name, legacy, kwargs = parse_converter(function_node.returns)
                 if legacy:
                     fail(f"Legacy converter {name!r} not allowed as a return converter")
                 if name not in return_converters:
@@ -4869,17 +4887,6 @@ class DSLParser:
         self.parameter_continuation = ''
         return self.next(self.state_parameter, line)
 
-
-    def to_required(self) -> None:
-        """
-        Transition to the "required" parameter state.
-        """
-        if self.parameter_state is not ParamState.REQUIRED:
-            self.parameter_state = ParamState.REQUIRED
-            assert self.function is not None
-            for p in self.function.parameters.values():
-                p.group = -p.group
-
     def state_parameter(self, line: str) -> None:
         assert isinstance(self.function, Function)
 
@@ -4905,380 +4912,20 @@ class DSLParser:
             self.parameter_continuation = line[:-1]
             return
 
-        func = self.function
-        match line.lstrip():
-            case '*':
-                self.parse_star(func)
-            case '[':
-                self.parse_opening_square_bracket(func)
-            case ']':
-                self.parse_closing_square_bracket(func)
-            case '/':
-                self.parse_slash(func)
-            case param:
-                self.parse_parameter(param)
-
-    def parse_parameter(self, line: str) -> None:
-        assert self.function is not None
-
-        match self.parameter_state:
-            case ParamState.START | ParamState.REQUIRED:
-                self.to_required()
-            case ParamState.LEFT_SQUARE_BEFORE:
-                self.parameter_state = ParamState.GROUP_BEFORE
-            case ParamState.GROUP_BEFORE:
-                if not self.group:
-                    self.to_required()
-            case ParamState.GROUP_AFTER | ParamState.OPTIONAL:
-                pass
-            case st:
-                fail(f"Function {self.function.name} has an unsupported group configuration. (Unexpected state {st}.a)")
-
-        # handle "as" for  parameters too
-        c_name = None
-        name, have_as_token, trailing = line.partition(' as ')
-        if have_as_token:
-            name = name.strip()
-            if ' ' not in name:
-                fields = trailing.strip().split(' ')
-                if not fields:
-                    fail("Invalid 'as' clause!")
-                c_name = fields[0]
-                if c_name.endswith(':'):
-                    name += ':'
-                    c_name = c_name[:-1]
-                fields[0] = name
-                line = ' '.join(fields)
-
-        default: str | None
-        base, equals, default = line.rpartition('=')
-        if not equals:
-            base = default
-            default = None
-
-        module = None
-        try:
-            ast_input = f"def x({base}): pass"
-            module = ast.parse(ast_input)
-        except SyntaxError:
-            try:
-                # the last = was probably inside a function call, like
-                #   c: int(accept={str})
-                # so assume there was no actual default value.
-                default = None
-                ast_input = f"def x({line}): pass"
-                module = ast.parse(ast_input)
-            except SyntaxError:
-                pass
-        if not module:
-            fail(f"Function {self.function.name!r} has an invalid parameter declaration:\n\t",
-                 repr(line))
-
-        function = module.body[0]
-        assert isinstance(function, ast.FunctionDef)
-        function_args = function.args
-
-        if len(function_args.args) > 1:
-            fail(f"Function {self.function.name!r} has an "
-                 f"invalid parameter declaration (comma?): {line!r}")
-        if function_args.defaults or function_args.kw_defaults:
-            fail(f"Function {self.function.name!r} has an "
-                 f"invalid parameter declaration (default value?): {line!r}")
-        if function_args.kwarg:
-            fail(f"Function {self.function.name!r} has an "
-                 f"invalid parameter declaration (**kwargs?): {line!r}")
-
-        if function_args.vararg:
-            is_vararg = True
-            parameter = function_args.vararg
-        else:
-            is_vararg = False
-            parameter = function_args.args[0]
-
-        parameter_name = parameter.arg
-        name, legacy, kwargs = self.parse_converter(parameter.annotation)
-
-        if not default:
-            if self.parameter_state is ParamState.OPTIONAL:
-                fail(f"Can't have a parameter without a default ({parameter_name!r}) "
-                      "after a parameter with a default!")
-            value: Sentinels | Null
-            if is_vararg:
-                value = NULL
-                kwargs.setdefault('c_default', "NULL")
-            else:
-                value = unspecified
-            if 'py_default' in kwargs:
-                fail("You can't specify py_default without specifying a default value!")
-        else:
-            if is_vararg:
-                fail("Vararg can't take a default value!")
-
-            if self.parameter_state is ParamState.REQUIRED:
-                self.parameter_state = ParamState.OPTIONAL
-            default = default.strip()
-            bad = False
-            ast_input = f"x = {default}"
-            try:
-                module = ast.parse(ast_input)
-
-                if 'c_default' not in kwargs:
-                    # we can only represent very simple data values in C.
-                    # detect whether default is okay, via a denylist
-                    # of disallowed ast nodes.
-                    class DetectBadNodes(ast.NodeVisitor):
-                        bad = False
-                        def bad_node(self, node: ast.AST) -> None:
-                            self.bad = True
-
-                        # inline function call
-                        visit_Call = bad_node
-                        # inline if statement ("x = 3 if y else z")
-                        visit_IfExp = bad_node
-
-                        # comprehensions and generator expressions
-                        visit_ListComp = visit_SetComp = bad_node
-                        visit_DictComp = visit_GeneratorExp = bad_node
-
-                        # literals for advanced types
-                        visit_Dict = visit_Set = bad_node
-                        visit_List = visit_Tuple = bad_node
-
-                        # "starred": "a = [1, 2, 3]; *a"
-                        visit_Starred = bad_node
-
-                    denylist = DetectBadNodes()
-                    denylist.visit(module)
-                    bad = denylist.bad
-                else:
-                    # if they specify a c_default, we can be more lenient about the default value.
-                    # but at least make an attempt at ensuring it's a valid expression.
-                    try:
-                        value = eval(default)
-                        if value is unspecified:
-                            fail("'unspecified' is not a legal default value!")
-                    except NameError:
-                        pass # probably a named constant
-                    except Exception as e:
-                        fail("Malformed expression given as default value "
-                             f"{default!r} caused {e!r}")
-                if bad:
-                    fail(f"Unsupported expression as default value: {default!r}")
-
-                assignment = module.body[0]
-                assert isinstance(assignment, ast.Assign)
-                expr = assignment.value
-                # mild hack: explicitly support NULL as a default value
-                c_default: str | None
-                if isinstance(expr, ast.Name) and expr.id == 'NULL':
-                    value = NULL
-                    py_default = '<unrepresentable>'
-                    c_default = "NULL"
-                elif (isinstance(expr, ast.BinOp) or
-                    (isinstance(expr, ast.UnaryOp) and
-                     not (isinstance(expr.operand, ast.Constant) and
-                          type(expr.operand.value) in {int, float, complex})
-                    )):
-                    c_default = kwargs.get("c_default")
-                    if not (isinstance(c_default, str) and c_default):
-                        fail(f"When you specify an expression ({default!r}) "
-                             f"as your default value, "
-                             f"you MUST specify a valid c_default.",
-                             ast.dump(expr))
-                    py_default = default
-                    value = unknown
-                elif isinstance(expr, ast.Attribute):
-                    a = []
-                    n: ast.expr | ast.Attribute = expr
-                    while isinstance(n, ast.Attribute):
-                        a.append(n.attr)
-                        n = n.value
-                    if not isinstance(n, ast.Name):
-                        fail(f"Unsupported default value {default!r} "
-                             "(looked like a Python constant)")
-                    a.append(n.id)
-                    py_default = ".".join(reversed(a))
-
-                    c_default = kwargs.get("c_default")
-                    if not (isinstance(c_default, str) and c_default):
-                        fail(f"When you specify a named constant ({py_default!r}) "
-                             "as your default value, "
-                             "you MUST specify a valid c_default.")
-
-                    try:
-                        value = eval(py_default)
-                    except NameError:
-                        value = unknown
-                else:
-                    value = ast.literal_eval(expr)
-                    py_default = repr(value)
-                    if isinstance(value, (bool, NoneType)):
-                        c_default = "Py_" + py_default
-                    elif isinstance(value, str):
-                        c_default = c_repr(value)
-                    else:
-                        c_default = py_default
-
-            except SyntaxError as e:
-                fail(f"Syntax error: {e.text!r}")
-            except (ValueError, AttributeError):
-                value = unknown
-                c_default = kwargs.get("c_default")
-                py_default = default
-                if not (isinstance(c_default, str) and c_default):
-                    fail("When you specify a named constant "
-                         f"({py_default!r}) as your default value, "
-                         "you MUST specify a valid c_default.")
-
-            kwargs.setdefault('c_default', c_default)
-            kwargs.setdefault('py_default', py_default)
-
-        dict = legacy_converters if legacy else converters
-        legacy_str = "legacy " if legacy else ""
-        if name not in dict:
-            fail(f'{name!r} is not a valid {legacy_str}converter')
-        # if you use a c_name for the parameter, we just give that name to the converter
-        # but the parameter object gets the python name
-        converter = dict[name](c_name or parameter_name, parameter_name, self.function, value, **kwargs)
-
-        kind: inspect._ParameterKind
-        if is_vararg:
-            kind = inspect.Parameter.VAR_POSITIONAL
-        elif self.keyword_only:
-            kind = inspect.Parameter.KEYWORD_ONLY
-        else:
-            kind = inspect.Parameter.POSITIONAL_OR_KEYWORD
-
-        if isinstance(converter, self_converter):
-            if len(self.function.parameters) == 1:
-                if self.parameter_state is not ParamState.REQUIRED:
-                    fail("A 'self' parameter cannot be marked optional.")
-                if value is not unspecified:
-                    fail("A 'self' parameter cannot have a default value.")
-                if self.group:
-                    fail("A 'self' parameter cannot be in an optional group.")
-                kind = inspect.Parameter.POSITIONAL_ONLY
-                self.parameter_state = ParamState.START
-                self.function.parameters.clear()
-            else:
-                fail("A 'self' parameter, if specified, must be the "
-                     "very first thing in the parameter block.")
-
-        if isinstance(converter, defining_class_converter):
-            _lp = len(self.function.parameters)
-            if _lp == 1:
-                if self.parameter_state is not ParamState.REQUIRED:
-                    fail("A 'defining_class' parameter cannot be marked optional.")
-                if value is not unspecified:
-                    fail("A 'defining_class' parameter cannot have a default value.")
-                if self.group:
-                    fail("A 'defining_class' parameter cannot be in an optional group.")
-            else:
-                fail("A 'defining_class' parameter, if specified, must either "
-                     "be the first thing in the parameter block, or come just "
-                     "after 'self'.")
-
-
-        p = Parameter(parameter_name, kind, function=self.function, converter=converter, default=value, group=self.group)
-
-        names = [k.name for k in self.function.parameters.values()]
-        if parameter_name in names[1:]:
-            fail(f"You can't have two parameters named {parameter_name!r}!")
-        elif names and parameter_name == names[0] and c_name is None:
-            fail(f"Parameter {parameter_name!r} requires a custom C name")
-
-        key = f"{parameter_name}_as_{c_name}" if c_name else parameter_name
-        self.function.parameters[key] = p
-
-    @staticmethod
-    def parse_converter(
-            annotation: ast.expr | None
-    ) -> tuple[str, bool, ConverterArgs]:
-        match annotation:
-            case ast.Constant(value=str() as value):
-                return value, True, {}
-            case ast.Name(name):
-                return name, False, {}
-            case ast.Call(func=ast.Name(name)):
-                symbols = globals()
-                kwargs: ConverterArgs = {}
-                for node in annotation.keywords:
-                    if not isinstance(node.arg, str):
-                        fail("Cannot use a kwarg splat in a function-call annotation")
-                    kwargs[node.arg] = eval_ast_expr(node.value, symbols)
-                return name, False, kwargs
-            case _:
-                fail(
-                    "Annotations must be either a name, a function call, or a string."
-                )
-
-    def parse_star(self, function: Function) -> None:
-        """Parse keyword-only parameter marker '*'."""
-        if self.keyword_only:
-            fail(f"Function {function.name!r} uses '*' more than once.")
-        self.keyword_only = True
-
-    def parse_opening_square_bracket(self, function: Function) -> None:
-        """Parse opening parameter group symbol '['."""
-        match self.parameter_state:
-            case ParamState.START | ParamState.LEFT_SQUARE_BEFORE:
-                self.parameter_state = ParamState.LEFT_SQUARE_BEFORE
-            case ParamState.REQUIRED | ParamState.GROUP_AFTER:
-                self.parameter_state = ParamState.GROUP_AFTER
-            case st:
-                fail(f"Function {function.name!r} "
-                     f"has an unsupported group configuration. "
-                     f"(Unexpected state {st}.b)")
-        self.group += 1
-        function.docstring_only = True
-
-    def parse_closing_square_bracket(self, function: Function) -> None:
-        """Parse closing parameter group symbol ']'."""
-        if not self.group:
-            fail(f"Function {function.name!r} has a ']' without a matching '['.")
-        if not any(p.group == self.group for p in function.parameters.values()):
-            fail(f"Function {function.name!r} has an empty group. "
-                 "All groups must contain at least one parameter.")
-        self.group -= 1
-        match self.parameter_state:
-            case ParamState.LEFT_SQUARE_BEFORE | ParamState.GROUP_BEFORE:
-                self.parameter_state = ParamState.GROUP_BEFORE
-            case ParamState.GROUP_AFTER | ParamState.RIGHT_SQUARE_AFTER:
-                self.parameter_state = ParamState.RIGHT_SQUARE_AFTER
-            case st:
-                fail(f"Function {function.name!r} "
-                     f"has an unsupported group configuration. "
-                     f"(Unexpected state {st}.c)")
-
-    def parse_slash(self, function: Function) -> None:
-        """Parse positional-only parameter marker '/'."""
-        if self.positional_only:
-            fail(f"Function {function.name!r} uses '/' more than once.")
-        self.positional_only = True
-        # REQUIRED and OPTIONAL are allowed here, that allows positional-only
-        # without option groups to work (and have default values!)
-        allowed = {
-            ParamState.REQUIRED,
-            ParamState.OPTIONAL,
-            ParamState.RIGHT_SQUARE_AFTER,
-            ParamState.GROUP_BEFORE,
-        }
-        if (self.parameter_state not in allowed) or self.group:
-            fail(f"Function {function.name!r} has an unsupported group configuration. "
-                 f"(Unexpected state {self.parameter_state}.d)")
-        if self.keyword_only:
-            fail(f"Function {function.name!r} mixes keyword-only and "
-                 "positional-only parameters, which is unsupported.")
-        # fixup preceding parameters
-        for p in function.parameters.values():
-            if p.is_vararg():
-                continue
-            if (p.kind is not inspect.Parameter.POSITIONAL_OR_KEYWORD and
-                not isinstance(p.converter, self_converter)
-            ):
-                fail(f"Function {function.name!r} mixes keyword-only and "
-                     "positional-only parameters, which is unsupported.")
-            p.kind = inspect.Parameter.POSITIONAL_ONLY
+        parameter_parser = ParameterParser(
+            self.function,
+            self.parameter_state,
+            self.group,
+            self.keyword_only,
+            self.positional_only
+        )
+        parameter_parser.parse_line(line)
+        self.parameter_state, self.group, self.keyword_only, self.positional_only = (
+            parameter_parser.parameter_state,
+            parameter_parser.group,
+            parameter_parser.keyword_only,
+            parameter_parser.positional_only
+        )
 
     def state_parameter_docstring_start(self, line: str) -> None:
         assert self.indent.margin is not None, "self.margin.infer() has not yet been called to set the margin"
@@ -5604,6 +5251,373 @@ class DSLParser:
         self.function.docstring = self.format_docstring()
 
 
+@dc.dataclass(slots=True)
+class ParameterParser:
+    function: Function
+    parameter_state: ParamState
+    group: int
+    keyword_only: bool
+    positional_only: bool
+
+    def parse_line(self, line: str) -> None:
+        match line.lstrip():
+            case '*':
+                self.parse_star()
+            case '[':
+                self.parse_opening_square_bracket()
+            case ']':
+                self.parse_closing_square_bracket()
+            case '/':
+                self.parse_slash()
+            case param:
+                self.parse_parameter(param)
+
+    def to_required(self) -> None:
+        """
+        Transition to the "required" parameter state.
+        """
+        if self.parameter_state is not ParamState.REQUIRED:
+            self.parameter_state = ParamState.REQUIRED
+            for p in self.function.parameters.values():
+                p.group = -p.group
+
+    def parse_parameter(self, line: str) -> None:
+        match self.parameter_state:
+            case ParamState.START | ParamState.REQUIRED:
+                self.to_required()
+            case ParamState.LEFT_SQUARE_BEFORE:
+                self.parameter_state = ParamState.GROUP_BEFORE
+            case ParamState.GROUP_BEFORE:
+                if not self.group:
+                    self.to_required()
+            case ParamState.GROUP_AFTER | ParamState.OPTIONAL:
+                pass
+            case st:
+                fail(f"Function {self.function.name} has an unsupported group configuration. (Unexpected state {st}.a)")
+
+        # handle "as" for  parameters too
+        c_name = None
+        name, have_as_token, trailing = line.partition(' as ')
+        if have_as_token:
+            name = name.strip()
+            if ' ' not in name:
+                fields = trailing.strip().split(' ')
+                if not fields:
+                    fail("Invalid 'as' clause!")
+                c_name = fields[0]
+                if c_name.endswith(':'):
+                    name += ':'
+                    c_name = c_name[:-1]
+                fields[0] = name
+                line = ' '.join(fields)
+
+        default: str | None
+        base, equals, default = line.rpartition('=')
+        if not equals:
+            base = default
+            default = None
+
+        module = None
+        try:
+            ast_input = f"def x({base}): pass"
+            module = ast.parse(ast_input)
+        except SyntaxError:
+            try:
+                # the last = was probably inside a function call, like
+                #   c: int(accept={str})
+                # so assume there was no actual default value.
+                default = None
+                ast_input = f"def x({line}): pass"
+                module = ast.parse(ast_input)
+            except SyntaxError:
+                pass
+        if not module:
+            fail(f"Function {self.function.name!r} has an invalid parameter declaration:\n\t",
+                 repr(line))
+
+        function = module.body[0]
+        assert isinstance(function, ast.FunctionDef)
+        function_args = function.args
+
+        if len(function_args.args) > 1:
+            fail(f"Function {self.function.name!r} has an "
+                 f"invalid parameter declaration (comma?): {line!r}")
+        if function_args.defaults or function_args.kw_defaults:
+            fail(f"Function {self.function.name!r} has an "
+                 f"invalid parameter declaration (default value?): {line!r}")
+        if function_args.kwarg:
+            fail(f"Function {self.function.name!r} has an "
+                 f"invalid parameter declaration (**kwargs?): {line!r}")
+
+        if function_args.vararg:
+            is_vararg = True
+            parameter = function_args.vararg
+        else:
+            is_vararg = False
+            parameter = function_args.args[0]
+
+        parameter_name = parameter.arg
+        name, legacy, kwargs = parse_converter(parameter.annotation)
+
+        if not default:
+            if self.parameter_state is ParamState.OPTIONAL:
+                fail(f"Can't have a parameter without a default ({parameter_name!r}) "
+                      "after a parameter with a default!")
+            value: Sentinels | Null
+            if is_vararg:
+                value = NULL
+                kwargs.setdefault('c_default', "NULL")
+            else:
+                value = unspecified
+            if 'py_default' in kwargs:
+                fail("You can't specify py_default without specifying a default value!")
+        else:
+            if is_vararg:
+                fail("Vararg can't take a default value!")
+
+            if self.parameter_state is ParamState.REQUIRED:
+                self.parameter_state = ParamState.OPTIONAL
+            default = default.strip()
+            bad = False
+            ast_input = f"x = {default}"
+            try:
+                module = ast.parse(ast_input)
+
+                if 'c_default' not in kwargs:
+                    # we can only represent very simple data values in C.
+                    # detect whether default is okay, via a denylist
+                    # of disallowed ast nodes.
+                    class DetectBadNodes(ast.NodeVisitor):
+                        bad = False
+                        def bad_node(self, node: ast.AST) -> None:
+                            self.bad = True
+
+                        # inline function call
+                        visit_Call = bad_node
+                        # inline if statement ("x = 3 if y else z")
+                        visit_IfExp = bad_node
+
+                        # comprehensions and generator expressions
+                        visit_ListComp = visit_SetComp = bad_node
+                        visit_DictComp = visit_GeneratorExp = bad_node
+
+                        # literals for advanced types
+                        visit_Dict = visit_Set = bad_node
+                        visit_List = visit_Tuple = bad_node
+
+                        # "starred": "a = [1, 2, 3]; *a"
+                        visit_Starred = bad_node
+
+                    denylist = DetectBadNodes()
+                    denylist.visit(module)
+                    bad = denylist.bad
+                else:
+                    # if they specify a c_default, we can be more lenient about the default value.
+                    # but at least make an attempt at ensuring it's a valid expression.
+                    try:
+                        value = eval(default)
+                        if value is unspecified:
+                            fail("'unspecified' is not a legal default value!")
+                    except NameError:
+                        pass # probably a named constant
+                    except Exception as e:
+                        fail("Malformed expression given as default value "
+                             f"{default!r} caused {e!r}")
+                if bad:
+                    fail(f"Unsupported expression as default value: {default!r}")
+
+                assignment = module.body[0]
+                assert isinstance(assignment, ast.Assign)
+                expr = assignment.value
+                # mild hack: explicitly support NULL as a default value
+                c_default: str | None
+                if isinstance(expr, ast.Name) and expr.id == 'NULL':
+                    value = NULL
+                    py_default = '<unrepresentable>'
+                    c_default = "NULL"
+                elif (isinstance(expr, ast.BinOp) or
+                    (isinstance(expr, ast.UnaryOp) and
+                     not (isinstance(expr.operand, ast.Constant) and
+                          type(expr.operand.value) in {int, float, complex})
+                    )):
+                    c_default = kwargs.get("c_default")
+                    if not (isinstance(c_default, str) and c_default):
+                        fail(f"When you specify an expression ({default!r}) "
+                             f"as your default value, "
+                             f"you MUST specify a valid c_default.",
+                             ast.dump(expr))
+                    py_default = default
+                    value = unknown
+                elif isinstance(expr, ast.Attribute):
+                    a = []
+                    n: ast.expr | ast.Attribute = expr
+                    while isinstance(n, ast.Attribute):
+                        a.append(n.attr)
+                        n = n.value
+                    if not isinstance(n, ast.Name):
+                        fail(f"Unsupported default value {default!r} "
+                             "(looked like a Python constant)")
+                    a.append(n.id)
+                    py_default = ".".join(reversed(a))
+
+                    c_default = kwargs.get("c_default")
+                    if not (isinstance(c_default, str) and c_default):
+                        fail(f"When you specify a named constant ({py_default!r}) "
+                             "as your default value, "
+                             "you MUST specify a valid c_default.")
+
+                    try:
+                        value = eval(py_default)
+                    except NameError:
+                        value = unknown
+                else:
+                    value = ast.literal_eval(expr)
+                    py_default = repr(value)
+                    if isinstance(value, (bool, NoneType)):
+                        c_default = "Py_" + py_default
+                    elif isinstance(value, str):
+                        c_default = c_repr(value)
+                    else:
+                        c_default = py_default
+
+            except SyntaxError as e:
+                fail(f"Syntax error: {e.text!r}")
+            except (ValueError, AttributeError):
+                value = unknown
+                c_default = kwargs.get("c_default")
+                py_default = default
+                if not (isinstance(c_default, str) and c_default):
+                    fail("When you specify a named constant "
+                         f"({py_default!r}) as your default value, "
+                         "you MUST specify a valid c_default.")
+
+            kwargs.setdefault('c_default', c_default)
+            kwargs.setdefault('py_default', py_default)
+
+        dict = legacy_converters if legacy else converters
+        legacy_str = "legacy " if legacy else ""
+        if name not in dict:
+            fail(f'{name!r} is not a valid {legacy_str}converter')
+        # if you use a c_name for the parameter, we just give that name to the converter
+        # but the parameter object gets the python name
+        converter = dict[name](c_name or parameter_name, parameter_name, self.function, value, **kwargs)
+
+        kind: inspect._ParameterKind
+        if is_vararg:
+            kind = inspect.Parameter.VAR_POSITIONAL
+        elif self.keyword_only:
+            kind = inspect.Parameter.KEYWORD_ONLY
+        else:
+            kind = inspect.Parameter.POSITIONAL_OR_KEYWORD
+
+        if isinstance(converter, self_converter):
+            if len(self.function.parameters) == 1:
+                if self.parameter_state is not ParamState.REQUIRED:
+                    fail("A 'self' parameter cannot be marked optional.")
+                if value is not unspecified:
+                    fail("A 'self' parameter cannot have a default value.")
+                if self.group:
+                    fail("A 'self' parameter cannot be in an optional group.")
+                kind = inspect.Parameter.POSITIONAL_ONLY
+                self.parameter_state = ParamState.START
+                self.function.parameters.clear()
+            else:
+                fail("A 'self' parameter, if specified, must be the "
+                     "very first thing in the parameter block.")
+
+        if isinstance(converter, defining_class_converter):
+            _lp = len(self.function.parameters)
+            if _lp == 1:
+                if self.parameter_state is not ParamState.REQUIRED:
+                    fail("A 'defining_class' parameter cannot be marked optional.")
+                if value is not unspecified:
+                    fail("A 'defining_class' parameter cannot have a default value.")
+                if self.group:
+                    fail("A 'defining_class' parameter cannot be in an optional group.")
+            else:
+                fail("A 'defining_class' parameter, if specified, must either "
+                     "be the first thing in the parameter block, or come just "
+                     "after 'self'.")
+
+
+        p = Parameter(parameter_name, kind, function=self.function, converter=converter, default=value, group=self.group)
+
+        names = [k.name for k in self.function.parameters.values()]
+        if parameter_name in names[1:]:
+            fail(f"You can't have two parameters named {parameter_name!r}!")
+        elif names and parameter_name == names[0] and c_name is None:
+            fail(f"Parameter {parameter_name!r} requires a custom C name")
+
+        key = f"{parameter_name}_as_{c_name}" if c_name else parameter_name
+        self.function.parameters[key] = p
+
+    def parse_star(self) -> None:
+        """Parse keyword-only parameter marker '*'."""
+        if self.keyword_only:
+            fail(f"Function {self.function.name!r} uses '*' more than once.")
+        self.keyword_only = True
+
+    def parse_opening_square_bracket(self) -> None:
+        """Parse opening parameter group symbol '['."""
+        match self.parameter_state:
+            case ParamState.START | ParamState.LEFT_SQUARE_BEFORE:
+                self.parameter_state = ParamState.LEFT_SQUARE_BEFORE
+            case ParamState.REQUIRED | ParamState.GROUP_AFTER:
+                self.parameter_state = ParamState.GROUP_AFTER
+            case st:
+                fail(f"Function {self.function.name!r} "
+                     f"has an unsupported group configuration. "
+                     f"(Unexpected state {st}.b)")
+        self.group += 1
+        self.function.docstring_only = True
+
+    def parse_closing_square_bracket(self) -> None:
+        """Parse closing parameter group symbol ']'."""
+        if not self.group:
+            fail(f"Function {self.function.name!r} has a ']' without a matching '['.")
+        if not any(p.group == self.group for p in self.function.parameters.values()):
+            fail(f"Function {self.function.name!r} has an empty group. "
+                 "All groups must contain at least one parameter.")
+        self.group -= 1
+        match self.parameter_state:
+            case ParamState.LEFT_SQUARE_BEFORE | ParamState.GROUP_BEFORE:
+                self.parameter_state = ParamState.GROUP_BEFORE
+            case ParamState.GROUP_AFTER | ParamState.RIGHT_SQUARE_AFTER:
+                self.parameter_state = ParamState.RIGHT_SQUARE_AFTER
+            case st:
+                fail(f"Function {self.function.name!r} "
+                     f"has an unsupported group configuration. "
+                     f"(Unexpected state {st}.c)")
+
+    def parse_slash(self) -> None:
+        """Parse positional-only parameter marker '/'."""
+        if self.positional_only:
+            fail(f"Function {self.function.name!r} uses '/' more than once.")
+        self.positional_only = True
+        # REQUIRED and OPTIONAL are allowed here, that allows positional-only
+        # without option groups to work (and have default values!)
+        allowed = {
+            ParamState.REQUIRED,
+            ParamState.OPTIONAL,
+            ParamState.RIGHT_SQUARE_AFTER,
+            ParamState.GROUP_BEFORE,
+        }
+        if (self.parameter_state not in allowed) or self.group:
+            fail(f"Function {self.function.name!r} has an unsupported group configuration. "
+                 f"(Unexpected state {self.parameter_state}.d)")
+        if self.keyword_only:
+            fail(f"Function {self.function.name!r} mixes keyword-only and "
+                 "positional-only parameters, which is unsupported.")
+        # fixup preceding parameters
+        for p in self.function.parameters.values():
+            if p.is_vararg():
+                continue
+            if (p.kind is not inspect.Parameter.POSITIONAL_OR_KEYWORD and
+                not isinstance(p.converter, self_converter)
+            ):
+                fail(f"Function {self.function.name!r} mixes keyword-only and "
+                     "positional-only parameters, which is unsupported.")
+            p.kind = inspect.Parameter.POSITIONAL_ONLY
 
 
 # maps strings to callables.
