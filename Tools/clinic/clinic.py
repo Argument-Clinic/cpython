@@ -2766,7 +2766,7 @@ class Function:
 
     def format_docstring(self) -> None:
         new_or_init = self.kind.new_or_init
-        if self.kind.new_or_init and not self.docstring:
+        if new_or_init and not self.docstring:
             # don't render a docstring at all, no signature, nothing.
             return
 
