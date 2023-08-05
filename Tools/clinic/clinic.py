@@ -2587,11 +2587,11 @@ class Function:
         }
         return f
 
-    def format_docstring_signature(self, *, new_or_init: bool) -> str:
+    def format_docstring_signature(self) -> str:
         text, add, output = _text_accumulator()
         parameters = self.render_parameters
 
-        if new_or_init:
+        if self.kind.new_or_init:
             # classes get *just* the name of the class
             # not __new__, not __init__, and not module.classname
             assert self.cls
@@ -2765,8 +2765,7 @@ class Function:
         return output()
 
     def format_docstring(self) -> None:
-        new_or_init = self.kind.new_or_init
-        if new_or_init and not self.docstring:
+        if self.kind.new_or_init and not self.docstring:
             # don't render a docstring at all, no signature, nothing.
             return
 
@@ -2805,7 +2804,7 @@ class Function:
 
         # finalize docstring
         parameters = self.format_docstring_parameters()
-        signature = self.format_docstring_signature(new_or_init=new_or_init)
+        signature = self.format_docstring_signature()
         docstring = "\n".join(lines)
 
         docstring = linear_format(docstring, signature=signature, parameters=parameters)
