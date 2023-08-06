@@ -47,28 +47,6 @@ def _expect_failure(tc, parser, code, errmsg, *, filename=None, lineno=None):
         tc.assertEqual(cm.exception.lineno, lineno)
 
 
-class FakeConverter:
-    def __init__(self, name, args):
-        self.name = name
-        self.args = args
-
-
-class FakeConverterFactory:
-    def __init__(self, name):
-        self.name = name
-
-    def __call__(self, name, default, **kwargs):
-        return FakeConverter(self.name, kwargs)
-
-
-class FakeConvertersDict:
-    def __init__(self):
-        self.used_converters = {}
-
-    def get(self, name, default):
-        return self.used_converters.setdefault(name, FakeConverterFactory(name))
-
-
 class ClinicWholeFileTest(TestCase):
     maxDiff = None
 
