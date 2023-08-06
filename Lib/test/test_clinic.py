@@ -7,7 +7,6 @@ from test.support import os_helper
 from test.support.os_helper import TESTFN, unlink
 from textwrap import dedent
 from unittest import TestCase
-import collections
 import contextlib
 import inspect
 import os.path
