@@ -5108,8 +5108,8 @@ class DSLParser:
         line = line.lstrip()
         match = self.star_from_version_re.match(line)
         if match:
-            self.parse_deprecated_positional(match.group(1))
-            return
+            self.parse_deprecated_positional(function, match.group(1))
+            return function
 
         match line:
             case '*':
@@ -5421,9 +5421,8 @@ class DSLParser:
                     "Annotations must be either a name, a function call, or a string."
                 )
 
-    def parse_deprecated_positional(self, thenceforth: str) -> None:
-        assert isinstance(self.function, Function)
-        fname = self.function.full_name
+    def parse_deprecated_positional(self, function: Function, thenceforth: str) -> None:
+        fname = function.full_name
 
         if self.keyword_only:
             fail(f"Function {fname!r}: '* [from ...]' must come before '*'")
@@ -5828,6 +5827,9 @@ class DSLParser:
         """
         Called when processing the block is done.
         """
+        if not function:
+            return
+
         def check_remaining(
                 symbol: str,
                 condition: Callable[[Parameter], bool]
