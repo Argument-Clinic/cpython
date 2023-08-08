@@ -22,7 +22,7 @@ with test_tools.imports_under_tool('clinic'):
 
 def _make_clinic(*, filename='clinic_tests'):
     clang = clinic.CLanguage(None)
-    c = clinic.clinic = clinic.Clinic(clang, filename=filename)
+    c = clinic.Clinic(clang, filename=filename)
     c.block_parser = clinic.BlockParser('', clang)
     return c
 
@@ -56,7 +56,11 @@ class ClinicWholeFileTest(TestCase):
                         filename=filename, lineno=lineno)
 
     def setUp(self):
-        self.clinic = _make_clinic(filename="test.c")
+        self.clinic = clinic.clinic = _make_clinic(filename="test.c")
+
+    def tearDown(self):
+        del self.clinic
+        del clinic.clinic
 
     def test_eol(self):
         # regression test:
@@ -787,9 +791,13 @@ xyz
 
 
 class ClinicParserTest(TestCase):
+    def tearDown(self):
+        for holder in self, clinic:
+            if hasattr(holder, "clinic"):
+                delattr(holder, "clinic")
 
     def parse(self, text):
-        c = _make_clinic()
+        c = clinic.clinic = _make_clinic()
         parser = DSLParser(c)
         block = clinic.Block(text)
         parser.parse(block)
@@ -1904,17 +1912,18 @@ class ClinicParserTest(TestCase):
         self.assertEqual(repr(clinic.NULL), '<Null>')
 
         # test that fail fails
-        expected = (
-            'Error in file "clown.txt" on line 69:\n'
-            'The igloos are melting!\n'
-        )
-        with support.captured_stdout() as stdout:
-            errmsg = 'The igloos are melting'
-            with self.assertRaisesRegex(clinic.ClinicError, errmsg) as cm:
-                clinic.fail(errmsg, filename='clown.txt', line_number=69)
-            exc = cm.exception
-            self.assertEqual(exc.filename, 'clown.txt')
-            self.assertEqual(exc.lineno, 69)
+        clinic.clinic = _make_clinic()
+        errmsg = 'The igloos are melting'
+
+        with (
+            support.captured_stdout() as stdout,
+            self.assertRaisesRegex(clinic.ClinicError, errmsg) as cm
+        ):
+            clinic.fail(errmsg, filename='clown.txt', line_number=69)
+
+        exc = cm.exception
+        self.assertEqual(exc.filename, 'clown.txt')
+        self.assertEqual(exc.lineno, 69)
 
     def test_non_ascii_character_in_docstring(self):
         block = """
@@ -2053,9 +2062,6 @@ class ClinicExternalTest(TestCase):
     maxDiff = None
 
     def run_clinic(self, *args):
-        if hasattr(clinic, "clinic"):
-            del clinic.clinic
-
         with (
             support.captured_stdout() as out,
             support.captured_stderr() as err,
