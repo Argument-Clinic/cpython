@@ -22,7 +22,7 @@ with test_tools.imports_under_tool('clinic'):
 
 def _make_clinic(*, filename='clinic_tests'):
     clang = clinic.CLanguage(None)
-    c = clinic.Clinic(clang, filename=filename)
+    c = clinic.clinic = clinic.Clinic(clang, filename=filename)
     c.block_parser = clinic.BlockParser('', clang)
     return c
 
@@ -608,31 +608,6 @@ class ClinicWholeFileTest(TestCase):
             [clinic start generated code]*/
         """
         self.expect_failure(block, err, lineno=2)
-
-
-class ParseFileUnitTest(TestCase):
-    def expect_parsing_failure(
-        self, *, filename, expected_error, verify=True, output=None
-    ):
-        errmsg = re.escape(dedent(expected_error).strip())
-        with self.assertRaisesRegex(clinic.ClinicError, errmsg):
-            clinic.parse_file(filename)
-
-    def test_parse_file_no_extension(self) -> None:
-        self.expect_parsing_failure(
-            filename="foo",
-            expected_error="Can't extract file type for file 'foo'"
-        )
-
-    def test_parse_file_strange_extension(self) -> None:
-        filenames_to_errors = {
-            "foo.rs": "Can't identify file type for file 'foo.rs'",
-            "foo.hs": "Can't identify file type for file 'foo.hs'",
-            "foo.js": "Can't identify file type for file 'foo.js'",
-        }
-        for filename, errmsg in filenames_to_errors.items():
-            with self.subTest(filename=filename):
-                self.expect_parsing_failure(filename=filename, expected_error=errmsg)
 
 
 class ClinicGroupPermuterTest(TestCase):
@@ -2078,6 +2053,9 @@ class ClinicExternalTest(TestCase):
     maxDiff = None
 
     def run_clinic(self, *args):
+        if hasattr(clinic, "clinic"):
+            del clinic.clinic
+
         with (
             support.captured_stdout() as out,
             support.captured_stderr() as err,
@@ -2097,6 +2075,23 @@ class ClinicExternalTest(TestCase):
         out, err, code = self.run_clinic(*args)
         self.assertNotEqual(code, 0, f"Unexpected success: {args=}")
         return out, err
+
+    def test_parse_file_no_extension(self) -> None:
+        out, err = self.expect_failure("foo")
+        self.assertIn("Can't extract file type for file 'foo'", err)
+        self.assertEqual(out.strip(), "")
+
+    def test_parse_file_strange_extension(self) -> None:
+        filenames_to_errors = {
+            "foo.rs": "Can't identify file type for file 'foo.rs'",
+            "foo.hs": "Can't identify file type for file 'foo.hs'",
+            "foo.js": "Can't identify file type for file 'foo.js'",
+        }
+        for filename, errmsg in filenames_to_errors.items():
+            with self.subTest(filename=filename):
+                out, err = self.expect_failure(filename)
+                self.assertIn(errmsg, err)
+                self.assertEqual(out.strip(), "")
 
     def test_external(self):
         CLINIC_TEST = 'clinic.test.c'
