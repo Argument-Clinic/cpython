@@ -792,9 +792,8 @@ xyz
 
 class ClinicParserTest(TestCase):
     def tearDown(self):
-        for holder in self, clinic:
-            if hasattr(holder, "clinic"):
-                delattr(holder, "clinic")
+        if hasattr(clinic, "clinic"):
+            del clinic.clinic
 
     def parse(self, text):
         c = clinic.clinic = _make_clinic()
