@@ -4536,7 +4536,6 @@ class IndentStack:
         return line[indent:]
 
 
-StateKeeper = Callable[[str], None]
 ConverterArgs = dict[str, Any]
 
 class ParamState(enum.IntEnum):
@@ -4570,9 +4569,18 @@ class ParamState(enum.IntEnum):
     RIGHT_SQUARE_AFTER = 6
 
 
+class DSLParserState(enum.Enum):
+    DSL_START                   = enum.auto()
+    MODULENAME_NAME             = enum.auto()
+    PARAMETERS_START            = enum.auto()
+    PARAMETER                   = enum.auto()
+    PARAMETER_DOCSTRING_START   = enum.auto()
+    PARAMETER_DOCSTRING         = enum.auto()
+    FUNCTION_DOCSTRING          = enum.auto()
+
+
 class DSLParser:
-    function: Function | None
-    state: StateKeeper
+    state: DSLParserState
     keyword_only: bool
     positional_only: bool
     deprecated_positional: VersionTuple | None
@@ -4607,8 +4615,7 @@ class DSLParser:
         self.reset()
 
     def reset(self) -> None:
-        self.function = None
-        self.state = self.state_dsl_start
+        self.state = DSLParserState.DSL_START
         self.keyword_only = False
         self.positional_only = False
         self.deprecated_positional = None
@@ -4770,17 +4777,18 @@ class DSLParser:
         block.output = []
         block_start = self.clinic.block_parser.line_number
         lines = block.input.split('\n')
+        function: Function | None = None
         for line_number, line in enumerate(lines, self.clinic.block_parser.block_start_line_number):
             if '\t' in line:
                 fail(f'Tab characters are illegal in the Clinic DSL: {line!r}',
                      line_number=block_start)
             try:
-                self.state(line)
+                function = self.handle_line(function=function, line=line)
             except ClinicError as exc:
                 exc.lineno = line_number
                 raise
 
-        self.do_post_block_processing_cleanup(line_number)
+        self.do_post_block_processing_cleanup(function, line_number)
         block.output.extend(self.clinic.language.render(self.clinic, block.signatures))
 
         if self.preserve_output:
@@ -4788,11 +4796,52 @@ class DSLParser:
                 fail("'preserve' only works for blocks that don't produce any output!")
             block.output = self.saved_output
 
+    def handle_line(
+        self,
+        /,
+        *,
+        function: Function | None,
+        line: str,
+        new_state: DSLParserState | None = None
+    ) -> Function | None:
+        if new_state:
+            self.state = new_state
+        match function:
+            case None:
+                match self.state:
+                    case DSLParserState.DSL_START:
+                        return self.handle_dsl_start(line)
+                    case DSLParserState.MODULENAME_NAME:
+                        return self.handle_modulename_name(line)
+                    case _ as state:
+                        raise AssertionError(
+                            f"self.state is {state!r} but function is still None!"
+                        )
+            case Function():
+                match self.state:
+                    case DSLParserState.PARAMETERS_START:
+                        return self.handle_parameters_start(function, line)
+                    case DSLParserState.PARAMETER:
+                        return self.handle_parameter(function, line)
+                    case DSLParserState.PARAMETER_DOCSTRING_START:
+                        return self.handle_parameter_docstring_start(function, line)
+                    case DSLParserState.PARAMETER_DOCSTRING:
+                        return self.handle_parameter_docstring(function, line)
+                    case DSLParserState.FUNCTION_DOCSTRING:
+                        return self.handle_function_docstring(function, line)
+                    case _ as state:
+                        raise AssertionError(f"Unexpected state: {state!r}")
+            case _:
+                raise AssertionError(
+                    f"Expected function to be a Function or None, "
+                    f"got {type(function)!r}"
+                )
+
     def in_docstring(self) -> bool:
         """Return true if we are processing a docstring."""
         return self.state in {
-            self.state_parameter_docstring,
-            self.state_function_docstring,
+            DSLParserState.PARAMETER_DOCSTRING,
+            DSLParserState.FUNCTION_DOCSTRING,
         }
 
     def valid_line(self, line: str) -> bool:
@@ -4807,18 +4856,9 @@ class DSLParser:
 
         return True
 
-    def next(
-            self,
-            state: StateKeeper,
-            line: str | None = None
-    ) -> None:
-        self.state = state
-        if line is not None:
-            self.state(line)
-
-    def state_dsl_start(self, line: str) -> None:
+    def handle_dsl_start(self, line: str) -> Function | None:
         if not self.valid_line(line):
-            return
+            return None
 
         # is it a directive?
         fields = shlex.split(line)
@@ -4829,11 +4869,15 @@ class DSLParser:
                 directive(*fields[1:])
             except TypeError as e:
                 fail(str(e))
-            return
+            return None
 
-        self.next(self.state_modulename_name, line)
+        return self.handle_line(
+            function=None,
+            line=line,
+            new_state=DSLParserState.MODULENAME_NAME
+        )
 
-    def state_modulename_name(self, line: str) -> None:
+    def handle_modulename_name(self, line: str) -> Function:
         # looking for declaration, which establishes the leftmost column
         # line should be
         #     modulename.fnname [as c_basename] [-> return annotation]
@@ -4888,11 +4932,10 @@ class DSLParser:
                     name=function_name, full_name=full_name, module=module,
                     cls=cls, c_basename=c_basename, docstring=''
                 )
-                self.function = function
                 self.block.signatures.append(function)
                 (cls or module).functions.append(function)
-                self.next(self.state_function_docstring)
-                return
+                self.state = DSLParserState.FUNCTION_DOCSTRING
+                return function
 
         line, _, returns = line.partition('->')
         returns = returns.strip()
@@ -4947,22 +4990,31 @@ class DSLParser:
         if not return_converter:
             return_converter = CReturnConverter()
 
-        self.function = Function(name=function_name, full_name=full_name, module=module, cls=cls, c_basename=c_basename,
-                                 return_converter=return_converter, kind=self.kind, coexist=self.coexist)
-        self.block.signatures.append(self.function)
+        function = Function(
+            name=function_name,
+            full_name=full_name,
+            module=module,
+            cls=cls,
+            c_basename=c_basename,
+            return_converter=return_converter,
+            kind=self.kind,
+            coexist=self.coexist
+        )
+        self.block.signatures.append(function)
 
         # insert a self converter automatically
-        type, name = correct_name_for_self(self.function)
+        type, name = correct_name_for_self(function)
         kwargs = {}
         if cls and type == "PyObject *":
             kwargs['type'] = cls.typedef
-        sc = self.function.self_converter = self_converter(name, name, self.function, **kwargs)
+        sc = function.self_converter = self_converter(name, name, function, **kwargs)
         p_self = Parameter(name, inspect.Parameter.POSITIONAL_ONLY,
-                           function=self.function, converter=sc)
-        self.function.parameters[name] = p_self
+                           function=function, converter=sc)
+        function.parameters[name] = p_self
 
-        (cls or module).functions.append(self.function)
-        self.next(self.state_parameters_start)
+        (cls or module).functions.append(function)
+        self.state = DSLParserState.PARAMETERS_START
+        return function
 
     # Now entering the parameters section.  The rules, formally stated:
     #
@@ -5019,33 +5071,34 @@ class DSLParser:
     # separate boolean state variables.)  The states are defined in the
     # ParamState class.
 
-    def state_parameters_start(self, line: str) -> None:
-        if not self.valid_line(line):
-            return
+    def handle_parameters_start(self, function: Function, line: str) -> Function:
+        if self.valid_line(line):
+            # if this line is not indented, we have no parameters
+            if not self.indent.infer(line):
+                self.handle_line(
+                    function=function,
+                    line=line,
+                    new_state=DSLParserState.FUNCTION_DOCSTRING
+                )
+            else:
+                self.parameter_continuation = ''
+                self.handle_line(
+                    function=function, line=line, new_state=DSLParserState.PARAMETER
+                )
+        return function
 
-        # if this line is not indented, we have no parameters
-        if not self.indent.infer(line):
-            return self.next(self.state_function_docstring, line)
-
-        self.parameter_continuation = ''
-        return self.next(self.state_parameter, line)
-
-
-    def to_required(self) -> None:
+    def to_required(self, function: Function) -> None:
         """
         Transition to the "required" parameter state.
         """
         if self.parameter_state is not ParamState.REQUIRED:
             self.parameter_state = ParamState.REQUIRED
-            assert self.function is not None
-            for p in self.function.parameters.values():
+            for p in function.parameters.values():
                 p.group = -p.group
 
-    def state_parameter(self, line: str) -> None:
-        assert isinstance(self.function, Function)
-
+    def handle_parameter(self, function: Function, line: str) -> Function:
         if not self.valid_line(line):
-            return
+            return function
 
         if self.parameter_continuation:
             line = self.parameter_continuation + ' ' + line.lstrip()
@@ -5055,51 +5108,59 @@ class DSLParser:
         indent = self.indent.infer(line)
         if indent == -1:
             # we outdented, must be to definition column
-            return self.next(self.state_function_docstring, line)
+            self.handle_line(
+                function=function, line=line, new_state=DSLParserState.FUNCTION_DOCSTRING
+            )
+            return function
 
         if indent == 1:
             # we indented, must be to new parameter docstring column
-            return self.next(self.state_parameter_docstring_start, line)
+            self.handle_line(
+                function=function,
+                line=line,
+                new_state=DSLParserState.PARAMETER_DOCSTRING_START
+            )
+            return function
 
         line = line.rstrip()
         if line.endswith('\\'):
             self.parameter_continuation = line[:-1]
-            return
+            return function
 
         line = line.lstrip()
         match = self.star_from_version_re.match(line)
         if match:
-            self.parse_deprecated_positional(match.group(1))
-            return
+            self.parse_deprecated_positional(function, match.group(1))
+            return function
 
-        func = self.function
         match line:
             case '*':
-                self.parse_star(func)
+                self.parse_star(function)
             case '[':
-                self.parse_opening_square_bracket(func)
+                self.parse_opening_square_bracket(function)
             case ']':
-                self.parse_closing_square_bracket(func)
+                self.parse_closing_square_bracket(function)
             case '/':
-                self.parse_slash(func)
+                self.parse_slash(function)
             case param:
-                self.parse_parameter(param)
+                self.parse_parameter(function, param)
 
-    def parse_parameter(self, line: str) -> None:
-        assert self.function is not None
+        return function
 
+    def parse_parameter(self, function: Function, line: str) -> None:
         match self.parameter_state:
             case ParamState.START | ParamState.REQUIRED:
-                self.to_required()
+                self.to_required(function)
             case ParamState.LEFT_SQUARE_BEFORE:
                 self.parameter_state = ParamState.GROUP_BEFORE
             case ParamState.GROUP_BEFORE:
                 if not self.group:
-                    self.to_required()
+                    self.to_required(function)
             case ParamState.GROUP_AFTER | ParamState.OPTIONAL:
                 pass
             case st:
-                fail(f"Function {self.function.name} has an unsupported group configuration. (Unexpected state {st}.a)")
+                fail(f"Function {function.name} has an unsupported group configuration. "
+                     f"(Unexpected state {st}.a)")
 
         # handle "as" for  parameters too
         c_name = None
@@ -5138,21 +5199,21 @@ class DSLParser:
             except SyntaxError:
                 pass
         if not module:
-            fail(f"Function {self.function.name!r} has an invalid parameter declaration:\n\t",
+            fail(f"Function {function.name!r} has an invalid parameter declaration:\n\t",
                  repr(line))
 
-        function = module.body[0]
-        assert isinstance(function, ast.FunctionDef)
-        function_args = function.args
+        function_node = module.body[0]
+        assert isinstance(function_node, ast.FunctionDef)
+        function_args = function_node.args
 
         if len(function_args.args) > 1:
-            fail(f"Function {self.function.name!r} has an "
+            fail(f"Function {function.name!r} has an "
                  f"invalid parameter declaration (comma?): {line!r}")
         if function_args.defaults or function_args.kw_defaults:
-            fail(f"Function {self.function.name!r} has an "
+            fail(f"Function {function.name!r} has an "
                  f"invalid parameter declaration (default value?): {line!r}")
         if function_args.kwarg:
-            fail(f"Function {self.function.name!r} has an "
+            fail(f"Function {function.name!r} has an "
                  f"invalid parameter declaration (**kwargs?): {line!r}")
 
         if function_args.vararg:
@@ -5307,7 +5368,9 @@ class DSLParser:
             fail(f'{name!r} is not a valid {legacy_str}converter')
         # if you use a c_name for the parameter, we just give that name to the converter
         # but the parameter object gets the python name
-        converter = dict[name](c_name or parameter_name, parameter_name, self.function, value, **kwargs)
+        converter = dict[name](
+            c_name or parameter_name, parameter_name, function, value, **kwargs
+        )
 
         kind: inspect._ParameterKind
         if is_vararg:
@@ -5318,7 +5381,7 @@ class DSLParser:
             kind = inspect.Parameter.POSITIONAL_OR_KEYWORD
 
         if isinstance(converter, self_converter):
-            if len(self.function.parameters) == 1:
+            if len(function.parameters) == 1:
                 if self.parameter_state is not ParamState.REQUIRED:
                     fail("A 'self' parameter cannot be marked optional.")
                 if value is not unspecified:
@@ -5327,13 +5390,13 @@ class DSLParser:
                     fail("A 'self' parameter cannot be in an optional group.")
                 kind = inspect.Parameter.POSITIONAL_ONLY
                 self.parameter_state = ParamState.START
-                self.function.parameters.clear()
+                function.parameters.clear()
             else:
                 fail("A 'self' parameter, if specified, must be the "
                      "very first thing in the parameter block.")
 
         if isinstance(converter, defining_class_converter):
-            _lp = len(self.function.parameters)
+            _lp = len(function.parameters)
             if _lp == 1:
                 if self.parameter_state is not ParamState.REQUIRED:
                     fail("A 'defining_class' parameter cannot be marked optional.")
@@ -5346,19 +5409,18 @@ class DSLParser:
                      "be the first thing in the parameter block, or come just "
                      "after 'self'.")
 
-
-        p = Parameter(parameter_name, kind, function=self.function,
+        p = Parameter(parameter_name, kind, function=function,
                       converter=converter, default=value, group=self.group,
                       deprecated_positional=self.deprecated_positional)
 
-        names = [k.name for k in self.function.parameters.values()]
+        names = [k.name for k in function.parameters.values()]
         if parameter_name in names[1:]:
             fail(f"You can't have two parameters named {parameter_name!r}!")
         elif names and parameter_name == names[0] and c_name is None:
             fail(f"Parameter {parameter_name!r} requires a custom C name")
 
         key = f"{parameter_name}_as_{c_name}" if c_name else parameter_name
-        self.function.parameters[key] = p
+        function.parameters[key] = p
 
     @staticmethod
     def parse_converter(
@@ -5382,9 +5444,8 @@ class DSLParser:
                     "Annotations must be either a name, a function call, or a string."
                 )
 
-    def parse_deprecated_positional(self, thenceforth: str) -> None:
-        assert isinstance(self.function, Function)
-        fname = self.function.full_name
+    def parse_deprecated_positional(self, function: Function, thenceforth: str) -> None:
+        fname = function.full_name
 
         if self.keyword_only:
             fail(f"Function {fname!r}: '* [from ...]' must come before '*'")
@@ -5468,11 +5529,16 @@ class DSLParser:
                      "positional-only parameters, which is unsupported.")
             p.kind = inspect.Parameter.POSITIONAL_ONLY
 
-    def state_parameter_docstring_start(self, line: str) -> None:
+    def handle_parameter_docstring_start(
+        self, function: Function, line: str
+    ) -> Function:
         assert self.indent.margin is not None, "self.margin.infer() has not yet been called to set the margin"
         self.parameter_docstring_indent = len(self.indent.margin)
         assert self.indent.depth == 3
-        return self.next(self.state_parameter_docstring, line)
+        self.handle_line(
+            function=function, line=line, new_state=DSLParserState.PARAMETER_DOCSTRING
+        )
+        return function
 
     def docstring_append(self, obj: Function | Parameter, line: str) -> None:
         """Add a rstripped line to the current docstring."""
@@ -5496,9 +5562,11 @@ class DSLParser:
     # every line of the docstring must start with at least F spaces,
     # where F > P.
     # these F spaces will be stripped.
-    def state_parameter_docstring(self, line: str) -> None:
+    def handle_parameter_docstring(
+        self, function: Function, line: str
+    ) -> Function:
         if not self.valid_line(line):
-            return
+            return function
 
         indent = self.indent.measure(line)
         if indent < self.parameter_docstring_indent:
@@ -5506,25 +5574,30 @@ class DSLParser:
             assert self.indent.depth < 3
             if self.indent.depth == 2:
                 # back to a parameter
-                return self.next(self.state_parameter, line)
-            assert self.indent.depth == 1
-            return self.next(self.state_function_docstring, line)
+                self.handle_line(
+                    function=function, line=line, new_state=DSLParserState.PARAMETER
+                )
+            else:
+                assert self.indent.depth == 1
+                self.handle_line(
+                    function=function, line=line, new_state=DSLParserState.FUNCTION_DOCSTRING
+                )
+            return function
 
-        assert self.function and self.function.parameters
-        last_param = next(reversed(self.function.parameters.values()))
+        assert function.parameters
+        last_param = next(reversed(function.parameters.values()))
         self.docstring_append(last_param, line)
+        return function
 
     # the final stanza of the DSL is the docstring.
-    def state_function_docstring(self, line: str) -> None:
-        assert self.function is not None
-
+    def handle_function_docstring(self, function: Function, line: str) -> Function:
         if self.group:
-            fail(f"Function {self.function.name!r} has a ']' without a matching '['.")
+            fail(f"Function {function.name!r} has a ']' without a matching '['.")
 
-        if not self.valid_line(line):
-            return
+        if self.valid_line(line):
+            self.docstring_append(function, line)
 
-        self.docstring_append(self.function, line)
+        return function
 
     def format_docstring_signature(
         self, f: Function, parameters: list[Parameter]
@@ -5702,9 +5775,7 @@ class DSLParser:
                 add('\n')
         return output()
 
-    def format_docstring(self) -> str:
-        assert self.function is not None
-        f = self.function
+    def format_docstring(self, f: Function) -> str:
         if f.kind.new_or_init and not f.docstring:
             # don't render a docstring at all, no signature, nothing.
             return f.docstring
@@ -5751,26 +5822,26 @@ class DSLParser:
                              signature=signature,
                              parameters=parameters).rstrip()
 
-    def do_post_block_processing_cleanup(self, lineno: int) -> None:
+    def do_post_block_processing_cleanup(
+        self, function: Function | None, lineno: int
+    ) -> None:
         """
         Called when processing the block is done.
         """
-        if not self.function:
+        if not function:
             return
 
         def check_remaining(
                 symbol: str,
                 condition: Callable[[Parameter], bool]
         ) -> None:
-            assert isinstance(self.function, Function)
-
-            if values := self.function.parameters.values():
+            if values := function.parameters.values():
                 last_param = next(reversed(values))
                 no_param_after_symbol = condition(last_param)
             else:
                 no_param_after_symbol = True
             if no_param_after_symbol:
-                fname = self.function.full_name
+                fname = function.full_name
                 fail(f"Function {fname!r} specifies {symbol!r} "
                      "without any parameters afterwards.", line_number=lineno)
 
@@ -5780,9 +5851,7 @@ class DSLParser:
         if self.deprecated_positional:
             check_remaining("* [from ...]", lambda p: not p.deprecated_positional)
 
-        self.function.docstring = self.format_docstring()
-
-
+        function.docstring = self.format_docstring(function)
 
 
 # maps strings to callables.
