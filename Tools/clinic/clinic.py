@@ -2654,7 +2654,7 @@ class Function:
         self.__render_parameters__: list[Parameter] | None = None
 
     @functools.cached_property
-    def new_or_init(self):
+    def new_or_init(self) -> bool:
         return self.name in ("__new__", "__init__")
 
     @functools.cached_property
