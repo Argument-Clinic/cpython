@@ -2416,12 +2416,10 @@ impl_definition block
         child: Module | Class | None
         module: Clinic | Module
         cls: Class | None = None
-        so_far: list[str] = []
 
         parent = module = self
 
-        for field in fields:
-            so_far.append(field)
+        for idx, field in enumerate(fields):
             if not isinstance(parent, Class):
                 child = parent.modules.get(field)
                 if child:
@@ -2429,7 +2427,7 @@ impl_definition block
                     continue
             child = parent.classes.get(field)
             if not child:
-                fullname = ".".join(so_far)
+                fullname = ".".join(fields[idx])
                 fail(f"Parent class or module {fullname!r} does not exist.")
             cls = parent = child
 
