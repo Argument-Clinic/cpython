@@ -2412,14 +2412,12 @@ impl_definition block
         this function is only ever used to find the parent of where
         a new class/module should go.
         """
-        parent: Clinic | Module | Class
-        child: Module | Class | None
-        module: Clinic | Module
+        parent: Clinic | Module | Class = self
+        module: Clinic | Module = self
         cls: Class | None = None
 
-        parent = module = self
-
         for idx, field in enumerate(fields):
+            child: Module | Class | None
             if not isinstance(parent, Class):
                 child = parent.modules.get(field)
                 if child:
