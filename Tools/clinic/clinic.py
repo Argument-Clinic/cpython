@@ -2419,15 +2419,16 @@ impl_definition block
         for idx, field in enumerate(fields):
             child: Module | Class | None
             if not isinstance(parent, Class):
-                child = parent.modules.get(field)
-                if child:
-                    parent = module = child
+                if field in parent.modules:
+                    module = parent.modules[field]
+                    parent = module
                     continue
-            child = parent.classes.get(field)
-            if not child:
+            if field in parent.classes:
+                cls = parent.classes[field]
+                parent = cls
+            else:
                 fullname = ".".join(fields[idx])
                 fail(f"Parent class or module {fullname!r} does not exist.")
-            cls = parent = child
 
         return module, cls
 
