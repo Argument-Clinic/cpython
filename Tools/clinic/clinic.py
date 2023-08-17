@@ -2417,7 +2417,6 @@ impl_definition block
         cls: Class | None = None
 
         for idx, field in enumerate(fields):
-            child: Module | Class | None
             if not isinstance(parent, Class):
                 if field in parent.modules:
                     module = parent.modules[field]
