@@ -2403,7 +2403,7 @@ impl_definition block
         return printer.f.getvalue()
 
     def _module_and_class(
-        self, fields: Iterable[str]
+        self, fields: Sequence[str]
     ) -> tuple[Module | Clinic, Class | None]:
         """
         fields should be an iterable of field names.
