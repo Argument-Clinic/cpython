@@ -3884,7 +3884,7 @@ class ClinicReprTests(unittest.TestCase):
             c_basename=None,
             full_name='foofoo',
             return_converter=clinic.init_return_converter(),
-            kind=clinic.FunctionKind.METHOD_INIT,
+            kind=clinic.FunctionKind.CALLABLE,
             coexist=False
         )
         self.assertEqual(repr(function), "<clinic.Function 'foo'>")
