@@ -50,6 +50,11 @@ from typing import (
     overload,
 )
 
+
+# Local includes.
+import libclinic
+
+
 # TODO:
 #
 # soon:
@@ -371,49 +376,6 @@ def pprint_words(items: list[str]) -> str:
         return " and ".join(items)
     else:
         return ", ".join(items[:-1]) + " and " + items[-1]
-
-
-def version_splitter(s: str) -> tuple[int, ...]:
-    """Splits a version string into a tuple of integers.
-
-    The following ASCII characters are allowed, and employ
-    the following conversions:
-        a -> -3
-        b -> -2
-        c -> -1
-    (This permits Python-style version strings such as "1.4b3".)
-    """
-    version: list[int] = []
-    accumulator: list[str] = []
-    def flush() -> None:
-        if not accumulator:
-            fail(f'Unsupported version string: {s!r}')
-        version.append(int(''.join(accumulator)))
-        accumulator.clear()
-
-    for c in s:
-        if c.isdigit():
-            accumulator.append(c)
-        elif c == '.':
-            flush()
-        elif c in 'abc':
-            flush()
-            version.append('abc'.index(c) - 3)
-        else:
-            fail(f'Illegal character {c!r} in version string {s!r}')
-    flush()
-    return tuple(version)
-
-def version_comparator(version1: str, version2: str) -> Literal[-1, 0, 1]:
-    iterator = itertools.zip_longest(
-        version_splitter(version1), version_splitter(version2), fillvalue=0
-    )
-    for a, b in iterator:
-        if a < b:
-            return -1
-        if a > b:
-            return 1
-    return 0
 
 
 class CRenderData:
@@ -5242,10 +5204,13 @@ class DSLParser:
         self.target_critical_section = []
 
     def directive_version(self, required: str) -> None:
-        if version_comparator(self.VERSION, required) < 0:
-            fail("Insufficient Clinic version!\n"
-                 f"  Version: {self.VERSION}\n"
-                 f"  Required: {required}")
+        try:
+            if libclinic.version_comparator(self.VERSION, required) < 0:
+                fail("Insufficient Clinic version!\n"
+                     f"  Version: {self.VERSION}\n"
+                     f"  Required: {required}")
+        except libclinic.ParseVersionError as err:
+            fail(str(err))
 
     def directive_module(self, name: str) -> None:
         fields = name.split('.')[:-1]
