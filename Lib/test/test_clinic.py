@@ -267,13 +267,13 @@ class ClinicWholeFileTest(TestCase):
     @staticmethod
     @contextlib.contextmanager
     def _clinic_version(new_version):
-        """Helper for test_version_*() tests"""
-        _saved = clinic.version
-        clinic.version = new_version
+        """Safely mutate the DSL VERSION (for version directive tests)."""
+        _saved = clinic.DSLParser.VERSION
+        clinic.DSLParser.VERSION = new_version
         try:
             yield
         finally:
-            clinic.version = _saved
+            clinic.DSLParser.VERSION = _saved
 
     def test_version_directive(self):
         dataset = (

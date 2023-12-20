@@ -61,8 +61,6 @@ from typing import (
 #         and keyword-only
 #
 
-version = '1'
-
 NO_VARARG = "PY_SSIZE_T_MAX"
 CLINIC_PREFIX = "__clinic_"
 CLINIC_PREFIXED_ARGS = {
@@ -5206,6 +5204,8 @@ class DSLParser:
     target_critical_section: list[str]
     from_version_re = re.compile(r'([*/]) +\[from +(.+)\]')
 
+    VERSION: Final[str] = '1'  # DSL version.
+
     def __init__(self, clinic: Clinic) -> None:
         self.clinic = clinic
 
@@ -5242,10 +5242,9 @@ class DSLParser:
         self.target_critical_section = []
 
     def directive_version(self, required: str) -> None:
-        global version
-        if version_comparator(version, required) < 0:
+        if version_comparator(self.VERSION, required) < 0:
             fail("Insufficient Clinic version!\n"
-                 f"  Version: {version}\n"
+                 f"  Version: {self.VERSION}\n"
                  f"  Required: {required}")
 
     def directive_module(self, name: str) -> None:
