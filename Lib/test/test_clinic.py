@@ -3827,7 +3827,7 @@ class FormatHelperTests(unittest.TestCase):
                 self.assertEqual(actual, expected)
 
     def test_accumulator(self):
-        acc = clinic.text_accumulator()
+        acc = clinic.TextAccumulator()
         self.assertEqual(acc.output(), "")
         acc.append("a")
         self.assertEqual(acc.output(), "a")

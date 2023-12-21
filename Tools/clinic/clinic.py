@@ -111,25 +111,34 @@ Appender = Callable[[str], None]
 Outputter = Callable[[], str]
 TemplateDict = dict[str, str]
 
-class _TextAccumulator(NamedTuple):
-    text: list[str]
-    append: Appender
-    output: Outputter
+class TextAccumulator:
 
-def _text_accumulator() -> _TextAccumulator:
-    text: list[str] = []
-    def output() -> str:
-        s = ''.join(text)
-        text.clear()
-        return s
-    return _TextAccumulator(text, text.append, output)
+    def __init__(self) -> None:
+        self._text: list[str] = []
+
+    @property
+    def text(self) -> list[str]:
+        return self._text
+
+    def add(self, text: str) -> None:
+        self._text.append(text)
+
+    def out(self) -> str:
+        joined = "".join(self._text)
+        self._text.clear()
+        return joined
+
+    #
+    # Aliases for the old TextAccumulator named tuple.
+    #
+    def append(self, text: str) -> None:
+        self.add(text)
+
+    def output(self) -> str:
+        return self.out()
 
 
-class TextAccumulator(NamedTuple):
-    append: Appender
-    output: Outputter
-
-def text_accumulator() -> TextAccumulator:
+def text_accumulator() -> tuple[Callable[[str], None], Callable[[], str]]:
     """
     Creates a simple text accumulator / joiner.
 
@@ -140,8 +149,8 @@ def text_accumulator() -> TextAccumulator:
        joined together (''.join(accumulator)) and
        empties the accumulator.
     """
-    text, append, output = _text_accumulator()
-    return TextAccumulator(append, output)
+    acc = TextAccumulator()
+    return acc.add, acc.out
 
 
 @dc.dataclass
@@ -267,12 +276,12 @@ def ensure_legal_c_identifier(s: str) -> str:
     return s
 
 def rstrip_lines(s: str) -> str:
-    text, add, output = _text_accumulator()
+    acc = TextAccumulator()
     for line in s.split('\n'):
-        add(line.rstrip())
-        add('\n')
-    text.pop()
-    return output()
+        acc.add(line.rstrip())
+        acc.add('\n')
+    acc.text.pop()
+    return acc.out()
 
 def format_escape(s: str) -> str:
     # double up curly-braces, this string will be used
@@ -1113,21 +1122,21 @@ class CLanguage(Language):
             self,
             f: Function
     ) -> str:
-        text, add, output = _text_accumulator()
+        acc = TextAccumulator()
         # turn docstring into a properly quoted C string
         for line in f.docstring.split('\n'):
-            add('"')
-            add(quoted_for_c_string(line))
-            add('\\n"\n')
+            acc.add('"')
+            acc.add(quoted_for_c_string(line))
+            acc.add('\\n"\n')
 
-        if text[-2] == sig_end_marker:
+        if acc.text[-2] == sig_end_marker:
             # If we only have a signature, add the blank line that the
             # __text_signature__ getter expects to be there.
-            add('"\\n"')
+            acc.add('"\\n"')
         else:
-            text.pop()
-            add('"')
-        return ''.join(text)
+            acc.text.pop()
+            acc.add('"')
+        return acc.out()
 
     def output_templates(
             self,
@@ -2464,10 +2473,10 @@ class BufferSeries:
 
     def __init__(self) -> None:
         self._start = 0
-        self._array: list[_TextAccumulator] = []
-        self._constructor = _text_accumulator
+        self._array: list[TextAccumulator] = []
+        self._constructor = TextAccumulator
 
-    def __getitem__(self, i: int) -> _TextAccumulator:
+    def __getitem__(self, i: int) -> TextAccumulator:
         i -= self._start
         if i < 0:
             self._start += i
@@ -2483,7 +2492,7 @@ class BufferSeries:
             ta.text.clear()
 
     def dump(self) -> str:
-        texts = [ta.output() for ta in self._array]
+        texts = [ta.out() for ta in self._array]
         return "".join(texts)
 
 
@@ -2669,7 +2678,7 @@ impl_definition block
             'impl_definition': d('block'),
         }
 
-        DestBufferType = dict[str, _TextAccumulator]
+        DestBufferType = dict[str, TextAccumulator]
         DestBufferList = list[DestBufferType]
 
         self.destination_buffers_stack: DestBufferList = []
@@ -2741,7 +2750,7 @@ impl_definition block
             self,
             name: str,
             item: int = 0
-    ) -> _TextAccumulator:
+    ) -> TextAccumulator:
         d = self.get_destination(name)
         return d.buffers[item]
 
@@ -6272,15 +6281,15 @@ class DSLParser:
     def format_docstring_signature(
         self, f: Function, parameters: list[Parameter]
     ) -> str:
-        text, add, output = _text_accumulator()
-        add(f.displayname)
+        acc = TextAccumulator()
+        acc.add(f.displayname)
         if self.forced_text_signature:
-            add(self.forced_text_signature)
+            acc.add(self.forced_text_signature)
         elif f.kind in {GETTER, SETTER}:
             # @getter and @setter do not need signatures like a method or a function.
             return ''
         else:
-            add('(')
+            acc.add('(')
 
             # populate "right_bracket_count" field for every parameter
             assert parameters, "We should always have a self parameter. " + repr(f)
@@ -6334,7 +6343,7 @@ class DSLParser:
 
             first_parameter = True
             last_p = parameters[-1]
-            line_length = len(''.join(text))
+            line_length = len(''.join(acc.text))
             indent = " " * line_length
             def add_parameter(text: str) -> None:
                 nonlocal line_length
@@ -6345,12 +6354,12 @@ class DSLParser:
                 else:
                     s = ' ' + text
                     if line_length + len(s) >= 72:
-                        add('\n')
-                        add(indent)
+                        acc.add('\n')
+                        acc.add(indent)
                         line_length = len(indent)
                         s = text
                 line_length += len(s)
-                add(s)
+                acc.add(s)
 
             for p in parameters:
                 if not p.converter.show_in_signature:
@@ -6412,10 +6421,10 @@ class DSLParser:
 
                 add_parameter(p_output())
 
-            add(fix_right_bracket_count(0))
+            acc.add(fix_right_bracket_count(0))
             if need_a_trailing_slash:
                 add_parameter('/')
-            add(')')
+            acc.add(')')
 
         # PEP 8 says:
         #
@@ -6427,13 +6436,13 @@ class DSLParser:
         # therefore this is commented out:
         #
         # if f.return_converter.py_default:
-        #     add(' -> ')
-        #     add(f.return_converter.py_default)
+        #     acc.add(' -> ')
+        #     acc.add(f.return_converter.py_default)
 
         if not f.docstring_only:
-            add("\n" + sig_end_marker + "\n")
+            acc.add("\n" + sig_end_marker + "\n")
 
-        signature_line = output()
+        signature_line = acc.out()
 
         # now fix up the places where the brackets look wrong
         return signature_line.replace(', ]', ',] ')
