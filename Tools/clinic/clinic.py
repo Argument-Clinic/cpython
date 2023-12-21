@@ -1136,7 +1136,7 @@ class CLanguage(Language):
         else:
             acc.text.pop()
             acc.add('"')
-        return acc.out()
+        return "".join(acc.text)
 
     def output_templates(
             self,
