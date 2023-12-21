@@ -281,7 +281,7 @@ def rstrip_lines(s: str) -> str:
         acc.add(line.rstrip())
         acc.add('\n')
     acc.text.pop()
-    return acc.out()
+    return acc.output()
 
 def format_escape(s: str) -> str:
     # double up curly-braces, this string will be used
@@ -1136,7 +1136,7 @@ class CLanguage(Language):
         else:
             acc.text.pop()
             acc.add('"')
-        return "".join(acc.text)
+        return ''.join(acc.text)
 
     def output_templates(
             self,
@@ -2492,7 +2492,7 @@ class BufferSeries:
             ta.text.clear()
 
     def dump(self) -> str:
-        texts = [ta.out() for ta in self._array]
+        texts = [ta.output() for ta in self._array]
         return "".join(texts)
 
 
@@ -6442,7 +6442,7 @@ class DSLParser:
         if not f.docstring_only:
             acc.add("\n" + sig_end_marker + "\n")
 
-        signature_line = acc.out()
+        signature_line = acc.output()
 
         # now fix up the places where the brackets look wrong
         return signature_line.replace(', ]', ',] ')
