@@ -1900,7 +1900,7 @@ class ClinicParserTest(TestCase):
                *vararg1: object
                *vararg2: object
         """
-        self.expect_failure(block, err)
+        self.expect_failure(block, err, lineno=3)
 
     def test_function_not_at_column_0(self):
         function = self.parse_function("""

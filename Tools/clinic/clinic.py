@@ -878,8 +878,6 @@ class CLanguage(Language):
                 if not p.is_optional():
                     min_kw_only = i - max_pos
             elif p.is_vararg():
-                if vararg != self.NO_VARARG:
-                    fail("Too many var args")
                 pseudo_args += 1
                 vararg = i - 1
             else:
@@ -5574,6 +5572,8 @@ class DSLParser:
                  f"invalid parameter declaration (**kwargs?): {line!r}")
 
         if function_args.vararg:
+            if any(p.is_vararg() for p in self.function.parameters.values()):
+                fail("Too many var args")
             is_vararg = True
             parameter = function_args.vararg
         else:
