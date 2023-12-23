@@ -141,8 +141,6 @@ def warn_or_fail(
     if clinic:
         if filename is None:
             filename = clinic.filename
-        if getattr(clinic, 'block_parser', None) and (line_number is None):
-            line_number = clinic.block_parser.line_number
     error = ClinicError(joined, filename=filename, lineno=line_number)
     if fail:
         raise error
@@ -881,7 +879,7 @@ class CLanguage(Language):
                     min_kw_only = i - max_pos
             elif p.is_vararg():
                 if vararg != self.NO_VARARG:
-                    fail("Too many var args")
+                    fail("Too many var args", line_number=0)  # FIXME
                 pseudo_args += 1
                 vararg = i - 1
             else:
@@ -1991,12 +1989,14 @@ class BlockParser:
             if line.startswith(stop_line):
                 remainder = line.removeprefix(stop_line)
                 if remainder and not remainder.isspace():
-                    fail(f"Garbage after stop line: {remainder!r}")
+                    fail(f"Garbage after stop line: {remainder!r}",
+                         line_number=self.line_number)
                 return True
             else:
                 # gh-92256: don't allow incorrectly formatted stop lines
                 if line.lstrip().startswith(stop_line):
-                    fail(f"Whitespace is not allowed before the stop line: {line!r}")
+                    fail(f"Whitespace is not allowed before the stop line: {line!r}",
+                         line_number=self.line_number)
                 return False
 
         # consume body of program
@@ -2041,7 +2041,8 @@ class BlockParser:
             for field in shlex.split(arguments):
                 name, equals, value = field.partition('=')
                 if not equals:
-                    fail(f"Mangled Argument Clinic marker line: {line!r}")
+                    fail(f"Mangled Argument Clinic marker line: {line!r}",
+                         line_number=self.line_number)
                 d[name.strip()] = value.strip()
 
             if self.verify:
@@ -2055,7 +2056,8 @@ class BlockParser:
                     fail("Checksum mismatch! "
                          f"Expected {checksum!r}, computed {computed!r}. "
                          "Suggested fix: remove all generated code including "
-                         "the end marker, or use the '-f' option.")
+                         "the end marker, or use the '-f' option.",
+                         line_number=self.line_number)
         else:
             # put back output
             output_lines = output.splitlines(keepends=True)
@@ -5151,7 +5153,7 @@ class DSLParser:
         for line_number, line in enumerate(lines, self.clinic.block_parser.block_start_line_number):
             if '\t' in line:
                 fail(f'Tab characters are illegal in the Clinic DSL: {line!r}',
-                     line_number=block_start)
+                     line_number=line_number)
             try:
                 self.state(line)
             except ClinicError as exc:
@@ -5163,7 +5165,8 @@ class DSLParser:
 
         if self.preserve_output:
             if block.output:
-                fail("'preserve' only works for blocks that don't produce any output!")
+                fail("'preserve' only works for blocks that don't produce any output!",
+                     line_number=block_start)
             block.output = self.saved_output
 
     def in_docstring(self) -> bool:
@@ -5940,7 +5943,7 @@ class DSLParser:
         matches = re.finditer(r'[^\x00-\x7F]', line)
         if offending := ", ".join([repr(m[0]) for m in matches]):
             warn("Non-ascii characters are not allowed in docstrings:",
-                 offending)
+                 offending, line_number=0)  # FIXME
 
         docstring = obj.docstring
         if docstring:
@@ -6179,7 +6182,8 @@ class DSLParser:
             if lines[1]:
                 fail(f"Docstring for {f.full_name!r} does not have a summary line!\n"
                      "Every non-blank function docstring must start with "
-                     "a single line summary followed by an empty line.")
+                     "a single line summary followed by an empty line.",
+                     line_number=0)  # FIXME
         elif len(lines) == 1:
             # the docstring is only one line right now--the summary line.
             # add an empty line after the summary line so we have space
@@ -6188,7 +6192,8 @@ class DSLParser:
 
         parameters_marker_count = len(f.docstring.split('{parameters}')) - 1
         if parameters_marker_count > 1:
-            fail('You may not specify {parameters} more than once in a docstring!')
+            fail('You may not specify {parameters} more than once in a docstring!',
+                 line_number=0)  # FIXME
 
         # insert signature at front and params after the summary line
         if not parameters_marker_count:

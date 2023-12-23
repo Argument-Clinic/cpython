@@ -74,7 +74,8 @@ class Monitor:
 
         def pop_stack() -> TokenAndCondition:
             if not self.stack:
-                self.fail("#" + token + " without matching #if / #ifdef / #ifndef!")
+                self.fail("#" + token + " without matching #if / #ifdef / #ifndef!",
+                          line_number=self.line_number)
             return self.stack.pop()
 
         if self.continuation:
@@ -114,7 +115,8 @@ class Monitor:
         while True:
             if '/*' in line:
                 if self.in_comment:
-                    self.fail("Nested block comment!")
+                    self.fail("Nested block comment!",
+                              line_number=self.line_number)
 
                 before, _, remainder = line.partition('/*')
                 comment, comment_ends, after = remainder.partition('*/')
@@ -145,7 +147,8 @@ class Monitor:
 
         if token in {'if', 'ifdef', 'ifndef', 'elif'}:
             if not condition:
-                self.fail("Invalid format for #" + token + " line: no argument!")
+                self.fail(f"Invalid format for #{token} line: no argument!",
+                          line_number=self.line_number)
             if token in {'if', 'elif'}:
                 if not is_a_simple_defined(condition):
                     condition = "(" + condition + ")"
@@ -155,7 +158,9 @@ class Monitor:
             else:
                 fields = condition.split()
                 if len(fields) != 1:
-                    self.fail("Invalid format for #" + token + " line: should be exactly one argument!")
+                    self.fail(f"Invalid format for #{token} line: "
+                              "should be exactly one argument!",
+                              line_number=self.line_number)
                 symbol = fields[0]
                 condition = 'defined(' + symbol + ')'
                 if token == 'ifndef':
