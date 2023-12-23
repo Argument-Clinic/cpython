@@ -138,9 +138,6 @@ def warn_or_fail(
     line_number: int | None = None,
 ) -> None:
     joined = " ".join([str(a) for a in args])
-    if clinic:
-        if filename is None:
-            filename = clinic.filename
     error = ClinicError(joined, filename=filename, lineno=line_number)
     if fail:
         raise error
@@ -315,7 +312,7 @@ class Language(metaclass=abc.ABCMeta):
     checksum_line = ""
 
     def __init__(self, filename: str) -> None:
-        ...
+        self.filename = filename
 
     @abc.abstractmethod
     def render(
@@ -1992,12 +1989,14 @@ class BlockParser:
                 remainder = line.removeprefix(stop_line)
                 if remainder and not remainder.isspace():
                     fail(f"Garbage after stop line: {remainder!r}",
+                         filename=self.language.filename,
                          line_number=self.line_number)
                 return True
             else:
                 # gh-92256: don't allow incorrectly formatted stop lines
                 if line.lstrip().startswith(stop_line):
                     fail(f"Whitespace is not allowed before the stop line: {line!r}",
+                         filename=self.language.filename,
                          line_number=self.line_number)
                 return False
 
@@ -2044,7 +2043,8 @@ class BlockParser:
                 name, equals, value = field.partition('=')
                 if not equals:
                     fail(f"Mangled Argument Clinic marker line: {line!r}",
-                         line_number=self.line_number)
+                         line_number=self.line_number,
+                         filename=self.language.filename)
                 d[name.strip()] = value.strip()
 
             if self.verify:
@@ -2059,6 +2059,7 @@ class BlockParser:
                          f"Expected {checksum!r}, computed {computed!r}. "
                          "Suggested fix: remove all generated code including "
                          "the end marker, or use the '-f' option.",
+                         filename=self.language.filename,
                          line_number=self.line_number)
         else:
             # put back output
@@ -5947,7 +5948,7 @@ class DSLParser:
         matches = re.finditer(r'[^\x00-\x7F]', line)
         if offending := ", ".join([repr(m[0]) for m in matches]):
             warn("Non-ascii characters are not allowed in docstrings:",
-                 offending)
+                 offending, filename=self.clinic.filename)
 
         docstring = obj.docstring
         if docstring:
