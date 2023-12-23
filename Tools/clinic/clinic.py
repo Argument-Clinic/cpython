@@ -879,7 +879,7 @@ class CLanguage(Language):
                     min_kw_only = i - max_pos
             elif p.is_vararg():
                 if vararg != self.NO_VARARG:
-                    fail("Too many var args", line_number=0)  # FIXME
+                    fail("Too many var args")
                 pseudo_args += 1
                 vararg = i - 1
             else:
@@ -5943,7 +5943,7 @@ class DSLParser:
         matches = re.finditer(r'[^\x00-\x7F]', line)
         if offending := ", ".join([repr(m[0]) for m in matches]):
             warn("Non-ascii characters are not allowed in docstrings:",
-                 offending, line_number=0)  # FIXME
+                 offending)
 
         docstring = obj.docstring
         if docstring:
@@ -6182,8 +6182,7 @@ class DSLParser:
             if lines[1]:
                 fail(f"Docstring for {f.full_name!r} does not have a summary line!\n"
                      "Every non-blank function docstring must start with "
-                     "a single line summary followed by an empty line.",
-                     line_number=0)  # FIXME
+                     "a single line summary followed by an empty line.")
         elif len(lines) == 1:
             # the docstring is only one line right now--the summary line.
             # add an empty line after the summary line so we have space
@@ -6192,8 +6191,7 @@ class DSLParser:
 
         parameters_marker_count = len(f.docstring.split('{parameters}')) - 1
         if parameters_marker_count > 1:
-            fail('You may not specify {parameters} more than once in a docstring!',
-                 line_number=0)  # FIXME
+            fail('You may not specify {parameters} more than once in a docstring!')
 
         # insert signature at front and params after the summary line
         if not parameters_marker_count:
