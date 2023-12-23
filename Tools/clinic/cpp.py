@@ -1,7 +1,17 @@
 import dataclasses as dc
 import re
 import sys
-from typing import NoReturn
+
+
+@dc.dataclass
+class ParseError(Exception):
+    message: str
+    _: dc.KW_ONLY
+    lineno: int
+    filename: str
+
+    def __post_init__(self) -> None:
+        super().__init__(self.message)
 
 
 TokenAndCondition = tuple[str, str]
@@ -32,7 +42,7 @@ class Monitor:
 
     Anyway this implementation seems to work well enough for the CPython sources.
     """
-    filename: str | None = None
+    filename: str
     _: dc.KW_ONLY
     verbose: bool = False
 
@@ -59,23 +69,17 @@ class Monitor:
         """
         return " && ".join(condition for token, condition in self.stack)
 
-    def fail(self, *a: object) -> NoReturn:
-        if self.filename:
-            filename = " " + self.filename
-        else:
-            filename = ''
-        print("Error at" + filename, "line", self.line_number, ":")
-        print("   ", ' '.join(str(x) for x in a))
-        sys.exit(-1)
-
     def writeline(self, line: str) -> None:
         self.line_number += 1
         line = line.strip()
 
         def pop_stack() -> TokenAndCondition:
             if not self.stack:
-                self.fail("#" + token + " without matching #if / #ifdef / #ifndef!",
-                          line_number=self.line_number)
+                raise ParseError(
+                    f"#{token} without matching #if / #ifdef / #ifndef!",
+                    filename=self.filename,
+                    lineno=self.line_number
+                )
             return self.stack.pop()
 
         if self.continuation:
@@ -115,8 +119,9 @@ class Monitor:
         while True:
             if '/*' in line:
                 if self.in_comment:
-                    self.fail("Nested block comment!",
-                              line_number=self.line_number)
+                    raise ParseError("Nested block comment!",
+                                     filename=self.filename,
+                                     lineno=self.line_number)
 
                 before, _, remainder = line.partition('/*')
                 comment, comment_ends, after = remainder.partition('*/')
@@ -147,8 +152,11 @@ class Monitor:
 
         if token in {'if', 'ifdef', 'ifndef', 'elif'}:
             if not condition:
-                self.fail(f"Invalid format for #{token} line: no argument!",
-                          line_number=self.line_number)
+                raise ParseError(
+                    f"Invalid format for #{token} line: no argument!",
+                    filename=self.filename,
+                    lineno=self.line_number
+                )
             if token in {'if', 'elif'}:
                 if not is_a_simple_defined(condition):
                     condition = "(" + condition + ")"
@@ -158,9 +166,10 @@ class Monitor:
             else:
                 fields = condition.split()
                 if len(fields) != 1:
-                    self.fail(f"Invalid format for #{token} line: "
-                              "should be exactly one argument!",
-                              line_number=self.line_number)
+                    raise ParseError(f"Invalid format for #{token} line: "
+                                     "should be exactly one argument!",
+                                     filename=self.filename,
+                                     lineno=self.line_number)
                 symbol = fields[0]
                 condition = 'defined(' + symbol + ')'
                 if token == 'ifndef':

@@ -667,10 +667,14 @@ class CLanguage(Language):
     def __init__(self, filename: str) -> None:
         super().__init__(filename)
         self.cpp = cpp.Monitor(filename)
-        self.cpp.fail = fail  # type: ignore[method-assign]
 
     def parse_line(self, line: str) -> None:
-        self.cpp.writeline(line)
+        try:
+            self.cpp.writeline(line)
+        except cpp.ParseError as exc:
+            raise ClinicError(str(exc),
+                              lineno=exc.lineno,
+                              filename=exc.filename)
 
     def render(
             self,
