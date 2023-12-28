@@ -1,17 +1,12 @@
 import dataclasses as dc
 import re
 import sys
+from typing import NoReturn
+
+from .errors import ParseError
 
 
-@dc.dataclass
-class ParseError(Exception):
-    message: str
-    _: dc.KW_ONLY
-    lineno: int
-    filename: str
-
-    def __post_init__(self) -> None:
-        super().__init__(self.message)
+__all__ = ["Monitor"]
 
 
 TokenAndCondition = tuple[str, str]
@@ -69,17 +64,16 @@ class Monitor:
         """
         return " && ".join(condition for token, condition in self.stack)
 
+    def fail(self, msg: str) -> NoReturn:
+        raise ParseError(msg, filename=self.filename, lineno=self.line_number)
+
     def writeline(self, line: str) -> None:
         self.line_number += 1
         line = line.strip()
 
         def pop_stack() -> TokenAndCondition:
             if not self.stack:
-                raise ParseError(
-                    f"#{token} without matching #if / #ifdef / #ifndef!",
-                    filename=self.filename,
-                    lineno=self.line_number
-                )
+                self.fail(f"#{token} without matching #if / #ifdef / #ifndef!")
             return self.stack.pop()
 
         if self.continuation:
@@ -119,9 +113,7 @@ class Monitor:
         while True:
             if '/*' in line:
                 if self.in_comment:
-                    raise ParseError("Nested block comment!",
-                                     filename=self.filename,
-                                     lineno=self.line_number)
+                    self.fail("Nested block comment!")
 
                 before, _, remainder = line.partition('/*')
                 comment, comment_ends, after = remainder.partition('*/')
@@ -152,11 +144,7 @@ class Monitor:
 
         if token in {'if', 'ifdef', 'ifndef', 'elif'}:
             if not condition:
-                raise ParseError(
-                    f"Invalid format for #{token} line: no argument!",
-                    filename=self.filename,
-                    lineno=self.line_number
-                )
+                self.fail(f"Invalid format for #{token} line: no argument!")
             if token in {'if', 'elif'}:
                 if not is_a_simple_defined(condition):
                     condition = "(" + condition + ")"
@@ -166,10 +154,8 @@ class Monitor:
             else:
                 fields = condition.split()
                 if len(fields) != 1:
-                    raise ParseError(f"Invalid format for #{token} line: "
-                                     "should be exactly one argument!",
-                                     filename=self.filename,
-                                     lineno=self.line_number)
+                    self.fail(f"Invalid format for #{token} line: "
+                              "should be exactly one argument!")
                 symbol = fields[0]
                 condition = 'defined(' + symbol + ')'
                 if token == 'ifndef':
