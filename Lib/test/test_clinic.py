@@ -2284,7 +2284,6 @@ class ClinicParserTest(TestCase):
         """
         with support.captured_stdout() as stdout:
             self.parse(block)
-        # The line numbers are off; this is a known limitation.
         expected = dedent("""\
             Warning in file 'clinic_tests':
             Non-ascii characters are not allowed in docstrings: 'á'
