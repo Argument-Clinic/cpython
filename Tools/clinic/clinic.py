@@ -16,7 +16,6 @@ import copy
 import dataclasses as dc
 import enum
 import functools
-import hashlib
 import inspect
 import io
 import itertools
@@ -1785,21 +1784,6 @@ class CLanguage(Language):
         return clinic.get_destination('block').dump()
 
 
-def create_regex(
-        before: str,
-        after: str,
-        word: bool = True,
-        whole_line: bool = True
-) -> re.Pattern[str]:
-    """Create an re object for matching marker lines."""
-    group_re = r"\w+" if word else ".+"
-    pattern = r'{}({}){}'
-    if whole_line:
-        pattern = '^' + pattern + '$'
-    pattern = pattern.format(re.escape(before), group_re, re.escape(after))
-    return re.compile(pattern)
-
-
 @dc.dataclass(slots=True, repr=False)
 class Block:
     r"""
@@ -1898,8 +1882,9 @@ class BlockParser:
         self.language = language
         before, _, after = language.start_line.partition('{dsl_name}')
         assert _ == '{dsl_name}'
-        self.find_start_re = create_regex(before, after, whole_line=False)
-        self.start_re = create_regex(before, after)
+        self.find_start_re = libclinic.create_regex(before, after,
+                                                    whole_line=False)
+        self.start_re = libclinic.create_regex(before, after)
         self.verify = verify
         self.last_checksum_re: re.Pattern[str] | None = None
         self.last_dsl_name: str | None = None
@@ -1992,7 +1977,7 @@ class BlockParser:
         else:
             before, _, after = self.language.checksum_line.format(dsl_name=dsl_name, arguments='{arguments}').partition('{arguments}')
             assert _ == '{arguments}'
-            checksum_re = create_regex(before, after, word=False)
+            checksum_re = libclinic.create_regex(before, after, word=False)
             self.last_dsl_name = dsl_name
             self.last_checksum_re = checksum_re
         assert checksum_re is not None
@@ -2028,7 +2013,7 @@ class BlockParser:
                 else:
                     checksum = d['checksum']
 
-                computed = compute_checksum(output, len(checksum))
+                computed = libclinic.compute_checksum(output, len(checksum))
                 if checksum != computed:
                     fail("Checksum mismatch! "
                          f"Expected {checksum!r}, computed {computed!r}. "
@@ -2143,8 +2128,8 @@ class BlockPrinter:
             write(output)
 
         arguments = "output={output} input={input}".format(
-            output=compute_checksum(output, 16),
-            input=compute_checksum(input, 16)
+            output=libclinic.compute_checksum(output, 16),
+            input=libclinic.compute_checksum(input, 16)
         )
         write(self.language.checksum_line.format(dsl_name=dsl_name, arguments=arguments))
         write("\n")
@@ -2244,27 +2229,6 @@ class Destination:
 LangDict = dict[str, Callable[[str], Language]]
 extensions: LangDict = { name: CLanguage for name in "c cc cpp cxx h hh hpp hxx".split() }
 extensions['py'] = PythonLanguage
-
-
-def write_file(filename: str, new_contents: str) -> None:
-    try:
-        with open(filename, encoding="utf-8") as fp:
-            old_contents = fp.read()
-
-        if old_contents == new_contents:
-            # no change: avoid modifying the file modification time
-            return
-    except FileNotFoundError:
-        pass
-    # Atomic write using a temporary file and os.replace()
-    filename_new = f"{filename}.new"
-    with open(filename_new, "w", encoding="utf-8") as fp:
-        fp.write(new_contents)
-    try:
-        os.replace(filename_new, filename)
-    except:
-        os.unlink(filename_new)
-        raise
 
 
 ClassDict = dict[str, "Class"]
@@ -2506,7 +2470,8 @@ impl_definition block
                                           core_includes=True,
                                           limited_capi=self.limited_capi,
                                           header_includes=self.includes)
-                    write_file(destination.filename, printer_2.f.getvalue())
+                    libclinic.write_file(destination.filename,
+                                         printer_2.f.getvalue())
                     continue
 
         return printer.f.getvalue()
@@ -2579,18 +2544,7 @@ def parse_file(
                     limited_capi=limited_capi)
     cooked = clinic.parse(raw)
 
-    write_file(output, cooked)
-
-
-def compute_checksum(
-        input: str | None,
-        length: int | None = None
-) -> str:
-    input = input or ''
-    s = hashlib.sha1(input.encode('utf-8')).hexdigest()
-    if length:
-        s = s[:length]
-    return s
+    libclinic.write_file(output, cooked)
 
 
 class PythonParser:
