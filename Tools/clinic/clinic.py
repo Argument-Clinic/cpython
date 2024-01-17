@@ -2495,6 +2495,7 @@ def parse_file(
         limited_capi: bool,
         output: str | None = None,
         verify: bool = True,
+        force: bool = False,
 ) -> None:
     if not output:
         output = filename
@@ -2527,10 +2528,10 @@ def parse_file(
     generated, cooked = clinic.parse(raw)
 
     changes = [libclinic.file_changed(f, data) for f, data in generated]
-    if any(changes) or libclinic.file_changed(output, cooked):
+    if any(changes) or libclinic.file_changed(output, cooked) or force:
         libclinic.write_file(output, cooked)
     for (output, cooked), changed in zip(generated, changes):
-        if changed:
+        if changed or force:
             libclinic.write_file(output, cooked)
 
 
@@ -6302,7 +6303,8 @@ def run_clinic(parser: argparse.ArgumentParser, ns: argparse.Namespace) -> None:
                 if ns.verbose:
                     print(path)
                 parse_file(path,
-                           verify=not ns.force, limited_capi=ns.limited_capi)
+                           verify=not ns.force, limited_capi=ns.limited_capi,
+                           force=ns.force)
         return
 
     if not ns.filename:
@@ -6315,7 +6317,8 @@ def run_clinic(parser: argparse.ArgumentParser, ns: argparse.Namespace) -> None:
         if ns.verbose:
             print(filename)
         parse_file(filename, output=ns.output,
-                   verify=not ns.force, limited_capi=ns.limited_capi)
+                   verify=not ns.force, limited_capi=ns.limited_capi,
+                   force=ns.force)
 
 
 def main(argv: list[str] | None = None) -> NoReturn:

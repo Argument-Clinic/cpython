@@ -19,7 +19,6 @@ def file_changed(filename: str, new_contents: str) -> bool:
 def write_file(filename: str, new_contents: str) -> None:
     # Atomic write using a temporary file and os.replace()
     filename_new = f"{filename}.new"
-    print("write to", filename)
     with open(filename_new, "w", encoding="utf-8") as fp:
         fp.write(new_contents)
     try:
