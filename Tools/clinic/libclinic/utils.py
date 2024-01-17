@@ -6,19 +6,20 @@ import string
 from typing import Literal
 
 
-def write_file(filename: str, new_contents: str) -> None:
-    """Write new content to file, iff the content changed."""
+def file_changed(filename: str, new_contents: str) -> bool:
     try:
         with open(filename, encoding="utf-8") as fp:
             old_contents = fp.read()
 
-        if old_contents == new_contents:
-            # no change: avoid modifying the file modification time
-            return
+        return old_contents != new_contents
     except FileNotFoundError:
-        pass
+        return False
+
+
+def write_file(filename: str, new_contents: str) -> None:
     # Atomic write using a temporary file and os.replace()
     filename_new = f"{filename}.new"
+    print("write to", filename)
     with open(filename_new, "w", encoding="utf-8") as fp:
         fp.write(new_contents)
     try:

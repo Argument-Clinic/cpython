@@ -2407,6 +2407,7 @@ impl_definition block
                                 header_includes=self.includes)
 
         # these are destinations not buffers
+        generated = []
         for name, destination in self.destinations.items():
             if destination.type == 'suppress':
                 continue
@@ -2450,11 +2451,12 @@ impl_definition block
                                           core_includes=True,
                                           limited_capi=self.limited_capi,
                                           header_includes=self.includes)
-                    libclinic.write_file(destination.filename,
-                                         printer_2.f.getvalue())
+                    generated.append((destination.filename,
+                                      printer_2.f.getvalue()))
                     continue
 
-        return printer.f.getvalue()
+        cooked = printer.f.getvalue()
+        return generated, cooked
 
     def _module_and_class(
         self, fields: Sequence[str]
@@ -2522,9 +2524,14 @@ def parse_file(
                     verify=verify,
                     filename=filename,
                     limited_capi=limited_capi)
-    cooked = clinic.parse(raw)
+    generated, cooked = clinic.parse(raw)
 
-    libclinic.write_file(output, cooked)
+    changes = [libclinic.file_changed(f, data) for f, data in generated]
+    if any(changes) or libclinic.file_changed(output, cooked):
+        libclinic.write_file(output, cooked)
+    for (output, cooked), changed in zip(generated, changes):
+        if changed:
+            libclinic.write_file(output, cooked)
 
 
 class PythonParser:

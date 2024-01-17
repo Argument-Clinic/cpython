@@ -19,6 +19,7 @@ from .utils import (
     FormatCounterFormatter,
     compute_checksum,
     create_regex,
+    file_changed,
     write_file,
 )
 
@@ -43,6 +44,7 @@ __all__ = [
     "FormatCounterFormatter",
     "compute_checksum",
     "create_regex",
+    "file_changed",
     "write_file",
 ]
 

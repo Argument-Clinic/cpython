@@ -72,7 +72,8 @@ class ClinicWholeFileTest(TestCase):
         # and since you really already had one,
         # the last line of the block got corrupted.
         raw = "/*[clinic]\nfoo\n[clinic]*/"
-        cooked = self.clinic.parse(raw).splitlines()
+        _, cooked = self.clinic.parse(raw)
+        cooked = cooked.splitlines()
         end_line = cooked[2].rstrip()
         # this test is redundant, it's just here explicitly to catch
         # the regression test so we don't forget what it looked like
@@ -131,7 +132,7 @@ class ClinicWholeFileTest(TestCase):
             //module test
             //[clinic stop]
         """).strip()
-        out = cl.parse(raw)
+        _, out = cl.parse(raw)
         expected = dedent("""
             //[clinic start]
             //module test
@@ -198,7 +199,7 @@ class ClinicWholeFileTest(TestCase):
             output print 'I told you once.'
             [clinic start generated code]*/
         """)
-        out = self.clinic.parse(raw)
+        _, out = self.clinic.parse(raw)
         # The generated output will differ for every run, but we can check that
         # it starts with the clinic block, we check that it contains all the
         # expected fields, and we check that it contains the checksum line.
@@ -397,7 +398,7 @@ class ClinicWholeFileTest(TestCase):
             [clinic start generated code]*/
         """)
         with support.captured_stdout() as stdout:
-            generated = self.clinic.parse(block)
+            _, generated = self.clinic.parse(block)
         self.assertIn(expected_warning, stdout.getvalue())
         self.assertEqual(generated, expected_generated)
 
@@ -435,7 +436,7 @@ class ClinicWholeFileTest(TestCase):
             dump buffer
             [clinic start generated code]*/
         """)
-        generated = self.clinic.parse(block)
+        _, generated = self.clinic.parse(block)
         expected_docstring_prototype = "// PyDoc_VAR(fn__doc__);"
         self.assertIn(expected_docstring_prototype, generated)
 
@@ -455,7 +456,7 @@ class ClinicWholeFileTest(TestCase):
             dump buffer
             [clinic start generated code]*/
         """)
-        generated = self.clinic.parse(block)
+        _, generated = self.clinic.parse(block)
         expected_docstring_prototype = "PyDoc_VAR(fn__doc__);  // test"
         self.assertIn(expected_docstring_prototype, generated)
 
@@ -476,7 +477,7 @@ class ClinicWholeFileTest(TestCase):
             dump buffer
             [clinic start generated code]*/
         """)
-        generated = self.clinic.parse(block)
+        _, generated = self.clinic.parse(block)
         expected_docstring_prototype = "/* PyDoc_VAR(fn__doc__); */"
         self.assertIn(expected_docstring_prototype, generated)
 
@@ -495,7 +496,7 @@ class ClinicWholeFileTest(TestCase):
             test
             /*[clinic end generated code: output=4e1243bd22c66e76 input=898f1a32965d44ca]*/
         """)
-        generated = self.clinic.parse(block)
+        _, generated = self.clinic.parse(block)
         self.assertEqual(generated, expected)
 
     def test_directive_preserve_twice(self):
@@ -533,7 +534,7 @@ class ClinicWholeFileTest(TestCase):
             [clinic start generated code]*/
             /*[clinic end generated code: output=da39a3ee5e6b4b0d input=524ce2e021e4eba6]*/
         """)
-        generated = self.clinic.parse(block)
+        _, generated = self.clinic.parse(block)
         self.assertEqual(generated, block)
 
     def test_directive_output_invalid_command(self):
@@ -813,7 +814,7 @@ xyz
         c = clinic.Clinic(language, filename="file", limited_capi=False)
         c.parsers['inert'] = InertParser(c)
         c.parsers['copy'] = CopyParser(c)
-        computed = c.parse(input)
+        _, computed = c.parse(input)
         self.assertEqual(output, computed)
 
     def test_clinic_1(self):
