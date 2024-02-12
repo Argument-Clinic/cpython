@@ -9,6 +9,7 @@ from test.support.os_helper import TESTFN, unlink
 from textwrap import dedent
 from unittest import TestCase
 import inspect
+import logging
 import os.path
 import re
 import sys
@@ -359,8 +360,10 @@ class ClinicWholeFileTest(TestCase):
         self.expect_failure(block, err, lineno=3)
 
     def test_dest_buffer_not_empty_at_eof(self):
-        expected_warning = ("Destination buffer 'buffer' not empty at "
-                            "end of file, emptying.")
+        expected_warning = (
+            "in file 'test.c': "
+            "Destination buffer 'buffer' not empty at end of file, emptying."
+        )
         expected_generated = dedent("""
             /*[clinic input]
             output everything buffer
@@ -396,9 +399,9 @@ class ClinicWholeFileTest(TestCase):
                 /
             [clinic start generated code]*/
         """)
-        with support.captured_stdout() as stdout:
+        with self.assertLogs(logger="clinic", level=logging.WARNING) as cm:
             generated = self.clinic.parse(block)
-        self.assertIn(expected_warning, stdout.getvalue())
+        self.assertEqual(cm.records[0].msg, expected_warning)
         self.assertEqual(generated, expected_generated)
 
     def test_dest_clear(self):
@@ -2282,18 +2285,16 @@ class ClinicParserTest(TestCase):
                     á param docstring
             docstring fü bár baß
         """
-        with support.captured_stdout() as stdout:
+        expected = [
+            ("in file 'clinic_tests': "
+             "Non-ascii characters are not allowed in docstrings: 'á'"),
+            ("in file 'clinic_tests': "
+            "Non-ascii characters are not allowed in docstrings: 'ü', 'á', 'ß'"),
+        ]
+        with self.assertLogs(logger="clinic", level=logging.WARNING) as cm:
             self.parse(block)
-        # The line numbers are off; this is a known limitation.
-        expected = dedent("""\
-            Warning in file 'clinic_tests' on line 0:
-            Non-ascii characters are not allowed in docstrings: 'á'
-
-            Warning in file 'clinic_tests' on line 0:
-            Non-ascii characters are not allowed in docstrings: 'ü', 'á', 'ß'
-
-        """)
-        self.assertEqual(stdout.getvalue(), expected)
+        actual = [r.msg for r in cm.records]
+        self.assertEqual(actual, expected)
 
     def test_illegal_c_identifier(self):
         err = "Illegal C identifier: 17a"

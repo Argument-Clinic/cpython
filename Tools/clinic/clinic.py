@@ -44,7 +44,6 @@ from typing import (
     Protocol,
     TypeVar,
     cast,
-    overload,
 )
 
 
@@ -93,54 +92,25 @@ NULL = Null()
 TemplateDict = dict[str, str]
 
 
-@overload
-def warn_or_fail(
-    *args: object,
-    fail: Literal[True],
-    filename: str | None = None,
-    line_number: int | None = None,
-) -> NoReturn: ...
-
-@overload
-def warn_or_fail(
-    *args: object,
-    fail: Literal[False] = False,
-    filename: str | None = None,
-    line_number: int | None = None,
-) -> None: ...
-
-def warn_or_fail(
-    *args: object,
-    fail: bool = False,
-    filename: str | None = None,
-    line_number: int | None = None,
-) -> None:
-    joined = " ".join([str(a) for a in args])
-    if clinic:
-        if filename is None:
-            filename = clinic.filename
-        if getattr(clinic, 'block_parser', None) and (line_number is None):
-            line_number = clinic.block_parser.line_number
-    error = ClinicError(joined, filename=filename, lineno=line_number)
-    if fail:
-        raise error
-    else:
-        print(error.report(warn_only=True))
+logger = libclinic.get_logger()
 
 
-def warn(
-    *args: object,
-    filename: str | None = None,
-    line_number: int | None = None,
-) -> None:
-    return warn_or_fail(*args, filename=filename, line_number=line_number, fail=False)
+def warn(msg: str, *, filename: str) -> None:
+    logger.warning(f"in file {filename!r}: {msg}")
+
 
 def fail(
     *args: object,
     filename: str | None = None,
     line_number: int | None = None,
 ) -> NoReturn:
-    warn_or_fail(*args, filename=filename, line_number=line_number, fail=True)
+    joined = " ".join([str(a) for a in args])
+    if clinic:
+        if filename is None:
+            filename = clinic.filename
+        if getattr(clinic, 'block_parser', None) and (line_number is None):
+            line_number = clinic.block_parser.line_number
+    raise ClinicError(joined, filename=filename, lineno=line_number)
 
 
 is_legal_c_identifier = re.compile('^[A-Za-z_][A-Za-z0-9_]*$').match
@@ -930,7 +900,8 @@ class CLanguage(Language):
                 (any(p.is_optional() for p in parameters) and
                  any(p.is_keyword_only() and not p.is_optional() for p in parameters)) or
                 any(c.broken_limited_capi for c in converters)):
-            warn(f"Function {f.full_name} cannot use limited C API")
+            warn(f"Function {f.full_name!r} cannot use the Limited C API",
+                 filename=clinic.filename)
             limited_capi = False
 
         parsearg: str | None
@@ -2418,7 +2389,8 @@ impl_definition block
 
                 if destination.type == 'buffer':
                     block.input = "dump " + name + "\n"
-                    warn("Destination buffer " + repr(name) + " not empty at end of file, emptying.")
+                    warn(f"Destination buffer {name!r} not empty at end of file, emptying.",
+                         filename=self.filename)
                     printer.write("\n")
                     printer.print_block(block,
                                         limited_capi=self.limited_capi,
@@ -5854,8 +5826,8 @@ class DSLParser:
         # so you may be able to remove this restriction.
         matches = re.finditer(r'[^\x00-\x7F]', line)
         if offending := ", ".join([repr(m[0]) for m in matches]):
-            warn("Non-ascii characters are not allowed in docstrings:",
-                 offending)
+            warn(f"Non-ascii characters are not allowed in docstrings: {offending}",
+                 filename=self.clinic.filename)
 
         docstring = obj.docstring
         if docstring:
@@ -6318,7 +6290,7 @@ def main(argv: list[str] | None = None) -> NoReturn:
     try:
         run_clinic(parser, args)
     except ClinicError as exc:
-        sys.stderr.write(exc.report())
+        sys.stderr.write(str(exc))
         sys.exit(1)
     else:
         sys.exit(0)

@@ -1,3 +1,4 @@
+import logging
 from typing import Final
 
 from .errors import (
@@ -23,6 +24,18 @@ from .utils import (
 )
 
 
+def get_logger(level: int = logging.WARNING) -> logging.Logger:
+    fmt = logging.Formatter("%(levelname)s: %(message)s")
+
+    console = logging.StreamHandler()
+    console.setLevel(level)
+    console.setFormatter(fmt)
+
+    logger = logging.getLogger("clinic")
+    logger.addHandler(console)
+    return logger
+
+
 __all__ = [
     # Error handling
     "ClinicError",
@@ -38,6 +51,9 @@ __all__ = [
     "suffix_all_lines",
     "wrap_declarations",
     "wrapped_c_string_literal",
+
+    # Misc
+    "get_logger",
 
     # Utility functions
     "FormatCounterFormatter",
