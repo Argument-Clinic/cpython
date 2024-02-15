@@ -15,6 +15,7 @@ from .formatting import (
     wrap_declarations,
     wrapped_c_string_literal,
 )
+from .tokenizer import generate_tokens
 from .utils import (
     FormatCounterFormatter,
     compute_checksum,
@@ -38,6 +39,9 @@ __all__ = [
     "suffix_all_lines",
     "wrap_declarations",
     "wrapped_c_string_literal",
+
+    # Parsing helpers
+    "generate_tokens",
 
     # Utility functions
     "FormatCounterFormatter",
