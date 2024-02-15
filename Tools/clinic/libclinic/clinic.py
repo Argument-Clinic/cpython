@@ -269,7 +269,7 @@ class Language(metaclass=abc.ABCMeta):
     @abc.abstractmethod
     def render(
             self,
-            clinic: Clinic | None,
+            clinic: Clinic,
             signatures: Iterable[Module | Class | Function]
     ) -> str:
         ...
@@ -622,7 +622,7 @@ class CLanguage(Language):
 
     def render(
             self,
-            clinic: Clinic | None,
+            clinic: Clinic,
             signatures: Iterable[Module | Class | Function]
     ) -> str:
         function = None
@@ -1576,7 +1576,7 @@ class CLanguage(Language):
 
     def render_function(
             self,
-            clinic: Clinic | None,
+            clinic: Clinic,
             f: Function | None
     ) -> str:
         if f is None or clinic is None:
@@ -2206,7 +2206,6 @@ class Parser(Protocol):
     def parse(self, block: Block) -> None: ...
 
 
-clinic: Clinic | None = None
 class Clinic:
 
     presets_text = """
@@ -2330,9 +2329,6 @@ impl_definition block
 
             assert name in self.destination_buffers
             preset[name] = buffer
-
-        global clinic
-        clinic = self
 
     def add_include(self, name: str, reason: str,
                     *, condition: str | None = None) -> None:
