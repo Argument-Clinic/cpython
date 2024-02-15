@@ -643,7 +643,7 @@ class ParseFileUnitTest(TestCase):
     ):
         errmsg = re.escape(dedent(expected_error).strip())
         with self.assertRaisesRegex(clinic.ClinicError, errmsg):
-            clinic.parse_file(filename, limited_capi=False)
+            libclinic.cli.parse_file(filename, limited_capi=False)
 
     def test_parse_file_no_extension(self) -> None:
         self.expect_parsing_failure(

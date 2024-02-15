@@ -3,12 +3,32 @@
 import argparse
 import inspect
 import os
+import re
 import sys
 from typing import NoReturn
+from collections.abc import Callable
 
+import libclinic
 from libclinic import clinic, ClinicError
+from libclinic.clinic import (
+    BlockParser,
+    Clinic,
+    CLanguage,
+    Language,
+    PythonLanguage,
+)
 
-__all__ = ["main"]
+__all__ = ["main", "parse_file"]
+
+
+# match '#define Py_LIMITED_API'
+LIMITED_CAPI_REGEX = re.compile(r'#define +Py_LIMITED_API')
+
+
+# "extensions" maps the file extension ("c", "py") to Language classes.
+LangDict = dict[str, Callable[[str], Language]]
+extensions: LangDict = { name: CLanguage for name in "c cc cpp cxx h hh hpp hxx".split() }
+extensions['py'] = PythonLanguage
 
 
 def create_cli() -> argparse.ArgumentParser:
@@ -66,6 +86,46 @@ For more information see https://devguide.python.org/development-tools/clinic/""
         help="the list of files to process",
     )
     return cmdline
+
+
+def parse_file(
+        filename: str,
+        *,
+        limited_capi: bool,
+        output: str | None = None,
+        verify: bool = True,
+) -> None:
+    if not output:
+        output = filename
+
+    extension = os.path.splitext(filename)[1][1:]
+    if not extension:
+        raise ClinicError(f"Can't extract file type for file {filename!r}")
+
+    try:
+        language = extensions[extension](filename)
+    except KeyError:
+        raise ClinicError(f"Can't identify file type for file {filename!r}")
+
+    with open(filename, encoding="utf-8") as f:
+        raw = f.read()
+
+    # exit quickly if there are no clinic markers in the file
+    find_start_re = BlockParser("", language).find_start_re
+    if not find_start_re.search(raw):
+        return
+
+    if LIMITED_CAPI_REGEX.search(raw):
+        limited_capi = True
+
+    assert isinstance(language, CLanguage)
+    clinic = Clinic(language,
+                    verify=verify,
+                    filename=filename,
+                    limited_capi=limited_capi)
+    cooked = clinic.parse(raw)
+
+    libclinic.write_file(output, cooked)
 
 
 def run_clinic(parser: argparse.ArgumentParser, ns: argparse.Namespace) -> None:
@@ -156,7 +216,7 @@ def run_clinic(parser: argparse.ArgumentParser, ns: argparse.Namespace) -> None:
                     continue
                 if ns.verbose:
                     print(path)
-                clinic.parse_file(path, verify=not ns.force, limited_capi=ns.limited_capi)
+                parse_file(path, verify=not ns.force, limited_capi=ns.limited_capi)
         return
 
     if not ns.filename:
@@ -168,7 +228,7 @@ def run_clinic(parser: argparse.ArgumentParser, ns: argparse.Namespace) -> None:
     for filename in ns.filename:
         if ns.verbose:
             print(filename)
-        clinic.parse_file(
+        parse_file(
             filename,
             output=ns.output,
             verify=not ns.force,

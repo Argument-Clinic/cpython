@@ -62,10 +62,6 @@ from libclinic import ClinicError
 #
 
 
-# match '#define Py_LIMITED_API'
-LIMITED_CAPI_REGEX = re.compile(r'#define +Py_LIMITED_API')
-
-
 class Sentinels(enum.Enum):
     unspecified = "unspecified"
     unknown = "unknown"
@@ -2202,12 +2198,6 @@ class Destination:
         return self.buffers.dump()
 
 
-# "extensions" maps the file extension ("c", "py") to Language classes.
-LangDict = dict[str, Callable[[str], Language]]
-extensions: LangDict = { name: CLanguage for name in "c cc cpp cxx h hh hpp hxx".split() }
-extensions['py'] = PythonLanguage
-
-
 ClassDict = dict[str, "Class"]
 DestinationDict = dict[str, Destination]
 ModuleDict = dict[str, "Module"]
@@ -2482,46 +2472,6 @@ impl_definition block
 
     def __repr__(self) -> str:
         return "<clinic.Clinic object>"
-
-
-def parse_file(
-        filename: str,
-        *,
-        limited_capi: bool,
-        output: str | None = None,
-        verify: bool = True,
-) -> None:
-    if not output:
-        output = filename
-
-    extension = os.path.splitext(filename)[1][1:]
-    if not extension:
-        fail(f"Can't extract file type for file {filename!r}")
-
-    try:
-        language = extensions[extension](filename)
-    except KeyError:
-        fail(f"Can't identify file type for file {filename!r}")
-
-    with open(filename, encoding="utf-8") as f:
-        raw = f.read()
-
-    # exit quickly if there are no clinic markers in the file
-    find_start_re = BlockParser("", language).find_start_re
-    if not find_start_re.search(raw):
-        return
-
-    if LIMITED_CAPI_REGEX.search(raw):
-        limited_capi = True
-
-    assert isinstance(language, CLanguage)
-    clinic = Clinic(language,
-                    verify=verify,
-                    filename=filename,
-                    limited_capi=limited_capi)
-    cooked = clinic.parse(raw)
-
-    libclinic.write_file(output, cooked)
 
 
 class PythonParser:
