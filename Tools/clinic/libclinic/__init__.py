@@ -1,5 +1,8 @@
 from typing import Final
 
+from .errors import (
+    ClinicError,
+)
 from .formatting import (
     SIG_END_MARKER,
     c_repr,
@@ -12,9 +15,18 @@ from .formatting import (
     wrap_declarations,
     wrapped_c_string_literal,
 )
+from .utils import (
+    FormatCounterFormatter,
+    compute_checksum,
+    create_regex,
+    write_file,
+)
 
 
 __all__ = [
+    # Error handling
+    "ClinicError",
+
     # Formatting helpers
     "SIG_END_MARKER",
     "c_repr",
@@ -26,6 +38,12 @@ __all__ = [
     "suffix_all_lines",
     "wrap_declarations",
     "wrapped_c_string_literal",
+
+    # Utility functions
+    "FormatCounterFormatter",
+    "compute_checksum",
+    "create_regex",
+    "write_file",
 ]
 
 

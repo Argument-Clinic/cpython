@@ -15,7 +15,6 @@ import copy
 import dataclasses as dc
 import enum
 import functools
-import hashlib
 import inspect
 import io
 import itertools
@@ -23,7 +22,6 @@ import os
 import pprint
 import re
 import shlex
-import string
 import sys
 import textwrap
 from collections.abc import (
@@ -48,7 +46,8 @@ from typing import (
 )
 
 import libclinic
-from libclinic import cpp
+import libclinic.cpp
+from libclinic import ClinicError
 
 
 # TODO:
@@ -88,27 +87,6 @@ class Null:
 NULL = Null()
 
 TemplateDict = dict[str, str]
-
-
-@dc.dataclass
-class ClinicError(Exception):
-    message: str
-    _: dc.KW_ONLY
-    lineno: int | None = None
-    filename: str | None = None
-
-    def __post_init__(self) -> None:
-        super().__init__(self.message)
-
-    def report(self, *, warn_only: bool = False) -> str:
-        msg = "Warning" if warn_only else "Error"
-        if self.filename is not None:
-            msg += f" in file {self.filename!r}"
-        if self.lineno is not None:
-            msg += f" on line {self.lineno}"
-        msg += ":\n"
-        msg += f"{self.message}\n"
-        return msg
 
 
 @overload
@@ -287,24 +265,6 @@ class CRenderData:
         self.unlock: list[str] = []
 
 
-class FormatCounterFormatter(string.Formatter):
-    """
-    This counts how many instances of each formatter
-    "replacement string" appear in the format string.
-
-    e.g. after evaluating "string {a}, {b}, {c}, {a}"
-         the counts dict would now look like
-         {'a': 2, 'b': 1, 'c': 1}
-    """
-    def __init__(self) -> None:
-        self.counts = collections.Counter[str]()
-
-    def get_value(
-        self, key: str, args: object, kwargs: object  # type: ignore[override]
-    ) -> Literal['']:
-        self.counts[key] += 1
-        return ''
-
 class Language(metaclass=abc.ABCMeta):
 
     start_line = ""
@@ -358,7 +318,7 @@ class Language(metaclass=abc.ABCMeta):
             fields = ['dsl_name']
             fields.extend(additional_fields)
             line: str = getattr(self, attr)
-            fcf = FormatCounterFormatter()
+            fcf = libclinic.FormatCounterFormatter()
             fcf.format(line)
             def local_fail(should_be_there_but_isnt: bool) -> None:
                 if should_be_there_but_isnt:
@@ -664,8 +624,7 @@ class CLanguage(Language):
 
     def __init__(self, filename: str) -> None:
         super().__init__(filename)
-        self.cpp = cpp.Monitor(filename)
-        self.cpp.fail = fail  # type: ignore[method-assign]
+        self.cpp = libclinic.cpp.Monitor(filename)
 
     def parse_line(self, line: str) -> None:
         self.cpp.writeline(line)
@@ -855,12 +814,6 @@ class CLanguage(Language):
             del parameters[0]
         converters = [p.converter for p in parameters]
 
-        # Copy includes from parameters to Clinic
-        for converter in converters:
-            include = converter.include
-            if include:
-                clinic.add_include(include.filename, include.reason,
-                                   condition=include.condition)
         if f.critical_section:
             clinic.add_include('pycore_critical_section.h', 'Py_BEGIN_CRITICAL_SECTION()')
         has_option_groups = parameters and (parameters[0].group or parameters[-1].group)
@@ -1003,7 +956,7 @@ class CLanguage(Language):
                 return_error = ('return NULL;' if simple_return
                                 else 'goto exit;')
                 parser_code = [libclinic.normalize_snippet("""
-                    if (nargs) {{
+                    if (nargs || (kwnames && PyTuple_GET_SIZE(kwnames))) {{
                         PyErr_SetString(PyExc_TypeError, "{name}() takes no arguments");
                         %s
                     }}
@@ -1403,6 +1356,13 @@ class CLanguage(Language):
             parser_definition = parser_body(parser_prototype, *parser_code,
                                             declarations=declarations)
 
+
+        # Copy includes from parameters to Clinic after parse_arg() has been
+        # called above.
+        for converter in converters:
+            for include in converter.includes:
+                clinic.add_include(include.filename, include.reason,
+                                   condition=include.condition)
 
         if new_or_init:
             methoddef_define = ''
@@ -1809,21 +1769,6 @@ class CLanguage(Language):
         return clinic.get_destination('block').dump()
 
 
-def create_regex(
-        before: str,
-        after: str,
-        word: bool = True,
-        whole_line: bool = True
-) -> re.Pattern[str]:
-    """Create an re object for matching marker lines."""
-    group_re = r"\w+" if word else ".+"
-    pattern = r'{}({}){}'
-    if whole_line:
-        pattern = '^' + pattern + '$'
-    pattern = pattern.format(re.escape(before), group_re, re.escape(after))
-    return re.compile(pattern)
-
-
 @dc.dataclass(slots=True, repr=False)
 class Block:
     r"""
@@ -1922,8 +1867,9 @@ class BlockParser:
         self.language = language
         before, _, after = language.start_line.partition('{dsl_name}')
         assert _ == '{dsl_name}'
-        self.find_start_re = create_regex(before, after, whole_line=False)
-        self.start_re = create_regex(before, after)
+        self.find_start_re = libclinic.create_regex(before, after,
+                                                    whole_line=False)
+        self.start_re = libclinic.create_regex(before, after)
         self.verify = verify
         self.last_checksum_re: re.Pattern[str] | None = None
         self.last_dsl_name: str | None = None
@@ -2012,7 +1958,7 @@ class BlockParser:
         else:
             before, _, after = self.language.checksum_line.format(dsl_name=dsl_name, arguments='{arguments}').partition('{arguments}')
             assert _ == '{arguments}'
-            checksum_re = create_regex(before, after, word=False)
+            checksum_re = libclinic.create_regex(before, after, word=False)
             self.last_dsl_name = dsl_name
             self.last_checksum_re = checksum_re
         assert checksum_re is not None
@@ -2046,7 +1992,7 @@ class BlockParser:
                 else:
                     checksum = d['checksum']
 
-                computed = compute_checksum(output, len(checksum))
+                computed = libclinic.compute_checksum(output, len(checksum))
                 if checksum != computed:
                     fail("Checksum mismatch! "
                          f"Expected {checksum!r}, computed {computed!r}. "
@@ -2159,8 +2105,8 @@ class BlockPrinter:
             write(output)
 
         arguments = "output={output} input={input}".format(
-            output=compute_checksum(output, 16),
-            input=compute_checksum(input, 16)
+            output=libclinic.compute_checksum(output, 16),
+            input=libclinic.compute_checksum(input, 16)
         )
         write(self.language.checksum_line.format(dsl_name=dsl_name, arguments=arguments))
         write("\n")
@@ -2260,27 +2206,6 @@ class Destination:
 LangDict = dict[str, Callable[[str], Language]]
 extensions: LangDict = { name: CLanguage for name in "c cc cpp cxx h hh hpp hxx".split() }
 extensions['py'] = PythonLanguage
-
-
-def write_file(filename: str, new_contents: str) -> None:
-    try:
-        with open(filename, encoding="utf-8") as fp:
-            old_contents = fp.read()
-
-        if old_contents == new_contents:
-            # no change: avoid modifying the file modification time
-            return
-    except FileNotFoundError:
-        pass
-    # Atomic write using a temporary file and os.replace()
-    filename_new = f"{filename}.new"
-    with open(filename_new, "w", encoding="utf-8") as fp:
-        fp.write(new_contents)
-    try:
-        os.replace(filename_new, filename)
-    except:
-        os.unlink(filename_new)
-        raise
 
 
 ClassDict = dict[str, "Class"]
@@ -2522,7 +2447,8 @@ impl_definition block
                                           core_includes=True,
                                           limited_capi=self.limited_capi,
                                           header_includes=self.includes)
-                    write_file(destination.filename, printer_2.f.getvalue())
+                    libclinic.write_file(destination.filename,
+                                         printer_2.f.getvalue())
                     continue
 
         return printer.f.getvalue()
@@ -2595,18 +2521,7 @@ def parse_file(
                     limited_capi=limited_capi)
     cooked = clinic.parse(raw)
 
-    write_file(output, cooked)
-
-
-def compute_checksum(
-        input: str | None,
-        length: int | None = None
-) -> str:
-    input = input or ''
-    s = hashlib.sha1(input.encode('utf-8')).hexdigest()
-    if length:
-        s = s[:length]
-    return s
+    libclinic.write_file(output, cooked)
 
 
 class PythonParser:
@@ -3070,7 +2985,6 @@ class CConverter(metaclass=CConverterAutoRegister):
     # Only set by self_converter.
     signature_name: str | None = None
 
-    include: Include | None = None
     broken_limited_capi: bool = False
 
     # keep in sync with self_converter.__init__!
@@ -3090,6 +3004,7 @@ class CConverter(metaclass=CConverterAutoRegister):
         self.name = ensure_legal_c_identifier(name)
         self.py_name = py_name
         self.unused = unused
+        self.includes: list[Include] = []
 
         if default is not unspecified:
             if (self.default_type
@@ -3345,8 +3260,7 @@ class CConverter(metaclass=CConverterAutoRegister):
         else:
             if expected_literal:
                 expected = f'"{expected}"'
-            if clinic is not None:
-                clinic.add_include('pycore_modsupport.h', '_PyArg_BadArgument()')
+            self.add_include('pycore_modsupport.h', '_PyArg_BadArgument()')
             return f'_PyArg_BadArgument("{{{{name}}}}", "{displayname}", {expected}, {{argname}});'
 
     def format_code(self, fmt: str, *,
@@ -3418,9 +3332,8 @@ class CConverter(metaclass=CConverterAutoRegister):
 
     def add_include(self, name: str, reason: str,
                     *, condition: str | None = None) -> None:
-        if self.include is not None:
-            raise ValueError("a converter only supports a single include")
-        self.include = Include(name, reason, condition)
+        include = Include(name, reason, condition)
+        self.includes.append(include)
 
 type_checks = {
     '&PyLong_Type': ('PyLong_Check', 'int'),
@@ -4451,7 +4364,9 @@ class Py_buffer_converter(CConverter):
                     if (ptr == NULL) {{{{
                         goto exit;
                     }}}}
-                    PyBuffer_FillInfo(&{paramname}, {argname}, (void *)ptr, len, 1, 0);
+                    if (PyBuffer_FillInfo(&{paramname}, {argname}, (void *)ptr, len, 1, PyBUF_SIMPLE) < 0) {{{{
+                        goto exit;
+                    }}}}
                 }}}}
                 else {{{{ /* any bytes-like object */
                     if (PyObject_GetBuffer({argname}, &{paramname}, PyBUF_SIMPLE) != 0) {{{{
@@ -5207,8 +5122,7 @@ class DSLParser:
 
         self.next(self.state_modulename_name, line)
 
-    @staticmethod
-    def parse_function_names(line: str) -> FunctionNames:
+    def parse_function_names(self, line: str) -> FunctionNames:
         left, as_, right = line.partition(' as ')
         full_name = left.strip()
         c_basename = right.strip()
@@ -5223,28 +5137,101 @@ class DSLParser:
             fail(f"Illegal function name: {full_name!r}")
         if not is_legal_c_identifier(c_basename):
             fail(f"Illegal C basename: {c_basename!r}")
-        return FunctionNames(full_name=full_name, c_basename=c_basename)
+        names = FunctionNames(full_name=full_name, c_basename=c_basename)
+        self.normalize_function_kind(names.full_name)
+        return names
 
-    def update_function_kind(self, fullname: str) -> None:
+    def normalize_function_kind(self, fullname: str) -> None:
+        # Fetch the method name and possibly class.
         fields = fullname.split('.')
         name = fields.pop()
         _, cls = self.clinic._module_and_class(fields)
+
+        # Check special method requirements.
         if name in unsupported_special_methods:
             fail(f"{name!r} is a special method and cannot be converted to Argument Clinic!")
+        if name == '__init__' and (self.kind is not CALLABLE or not cls):
+            fail(f"{name!r} must be a normal method; got '{self.kind}'!")
+        if name == '__new__' and (self.kind is not CLASS_METHOD or not cls):
+            fail("'__new__' must be a class method!")
+        if self.kind in {GETTER, SETTER} and not cls:
+            fail("@getter and @setter must be methods")
 
+        # Normalise self.kind.
         if name == '__new__':
-            if (self.kind is CLASS_METHOD) and cls:
-                self.kind = METHOD_NEW
-            else:
-                fail("'__new__' must be a class method!")
+            self.kind = METHOD_NEW
         elif name == '__init__':
-            if (self.kind is CALLABLE) and cls:
-                self.kind = METHOD_INIT
+            self.kind = METHOD_INIT
+
+    def resolve_return_converter(
+        self, full_name: str, forced_converter: str
+    ) -> CReturnConverter:
+        if forced_converter:
+            if self.kind in {GETTER, SETTER}:
+                fail(f"@{self.kind.name.lower()} method cannot define a return type")
+            ast_input = f"def x() -> {forced_converter}: pass"
+            try:
+                module_node = ast.parse(ast_input)
+            except SyntaxError:
+                fail(f"Badly formed annotation for {full_name!r}: {forced_converter!r}")
+            function_node = module_node.body[0]
+            assert isinstance(function_node, ast.FunctionDef)
+            try:
+                name, legacy, kwargs = self.parse_converter(function_node.returns)
+                if legacy:
+                    fail(f"Legacy converter {name!r} not allowed as a return converter")
+                if name not in return_converters:
+                    fail(f"No available return converter called {name!r}")
+                return return_converters[name](**kwargs)
+            except ValueError:
+                fail(f"Badly formed annotation for {full_name!r}: {forced_converter!r}")
+
+        if self.kind is METHOD_INIT:
+            return init_return_converter()
+        return CReturnConverter()
+
+    def parse_cloned_function(self, names: FunctionNames, existing: str) -> None:
+        full_name, c_basename = names
+        fields = [x.strip() for x in existing.split('.')]
+        function_name = fields.pop()
+        module, cls = self.clinic._module_and_class(fields)
+        parent = cls or module
+
+        for existing_function in parent.functions:
+            if existing_function.name == function_name:
+                break
+        else:
+            print(f"{cls=}, {module=}, {existing=}", file=sys.stderr)
+            print(f"{(cls or module).functions=}", file=sys.stderr)
+            fail(f"Couldn't find existing function {existing!r}!")
+
+        fields = [x.strip() for x in full_name.split('.')]
+        function_name = fields.pop()
+        module, cls = self.clinic._module_and_class(fields)
+
+        overrides: dict[str, Any] = {
+            "name": function_name,
+            "full_name": full_name,
+            "module": module,
+            "cls": cls,
+            "c_basename": c_basename,
+            "docstring": "",
+        }
+        if not (existing_function.kind is self.kind and
+                existing_function.coexist == self.coexist):
+            # Allow __new__ or __init__ methods.
+            if existing_function.kind.new_or_init:
+                overrides["kind"] = self.kind
+                # Future enhancement: allow custom return converters
+                overrides["return_converter"] = CReturnConverter()
             else:
-                fail(
-                    "'__init__' must be a normal method; "
-                    f"got '{self.kind}'!"
-                )
+                fail("'kind' of function and cloned function don't match! "
+                     "(@classmethod/@staticmethod/@coexist)")
+        function = existing_function.copy(**overrides)
+        self.function = function
+        self.block.signatures.append(function)
+        (cls or module).functions.append(function)
+        self.next(self.state_function_docstring)
 
     def state_modulename_name(self, line: str) -> None:
         # looking for declaration, which establishes the leftmost column
@@ -5269,110 +5256,55 @@ class DSLParser:
         # are we cloning?
         before, equals, existing = line.rpartition('=')
         if equals:
-            full_name, c_basename = self.parse_function_names(before)
             existing = existing.strip()
             if is_legal_py_identifier(existing):
                 # we're cloning!
-                fields = [x.strip() for x in existing.split('.')]
-                function_name = fields.pop()
-                module, cls = self.clinic._module_and_class(fields)
-
-                for existing_function in (cls or module).functions:
-                    if existing_function.name == function_name:
-                        break
-                else:
-                    print(f"{cls=}, {module=}, {existing=}", file=sys.stderr)
-                    print(f"{(cls or module).functions=}", file=sys.stderr)
-                    fail(f"Couldn't find existing function {existing!r}!")
-
-                fields = [x.strip() for x in full_name.split('.')]
-                function_name = fields.pop()
-                module, cls = self.clinic._module_and_class(fields)
-
-                self.update_function_kind(full_name)
-                overrides: dict[str, Any] = {
-                    "name": function_name,
-                    "full_name": full_name,
-                    "module": module,
-                    "cls": cls,
-                    "c_basename": c_basename,
-                    "docstring": "",
-                }
-                if not (existing_function.kind is self.kind and
-                        existing_function.coexist == self.coexist):
-                    # Allow __new__ or __init__ methods.
-                    if existing_function.kind.new_or_init:
-                        overrides["kind"] = self.kind
-                        # Future enhancement: allow custom return converters
-                        overrides["return_converter"] = CReturnConverter()
-                    else:
-                        fail("'kind' of function and cloned function don't match! "
-                             "(@classmethod/@staticmethod/@coexist)")
-                function = existing_function.copy(**overrides)
-                self.function = function
-                self.block.signatures.append(function)
-                (cls or module).functions.append(function)
-                self.next(self.state_function_docstring)
-                return
+                names = self.parse_function_names(before)
+                return self.parse_cloned_function(names, existing)
 
         line, _, returns = line.partition('->')
         returns = returns.strip()
         full_name, c_basename = self.parse_function_names(line)
-
-        return_converter = None
-        if returns:
-            if self.kind in {GETTER, SETTER}:
-                fail(f"@{self.kind.name.lower()} method cannot define a return type")
-            ast_input = f"def x() -> {returns}: pass"
-            try:
-                module_node = ast.parse(ast_input)
-            except SyntaxError:
-                fail(f"Badly formed annotation for {full_name!r}: {returns!r}")
-            function_node = module_node.body[0]
-            assert isinstance(function_node, ast.FunctionDef)
-            try:
-                name, legacy, kwargs = self.parse_converter(function_node.returns)
-                if legacy:
-                    fail(f"Legacy converter {name!r} not allowed as a return converter")
-                if name not in return_converters:
-                    fail(f"No available return converter called {name!r}")
-                return_converter = return_converters[name](**kwargs)
-            except ValueError:
-                fail(f"Badly formed annotation for {full_name!r}: {returns!r}")
+        return_converter = self.resolve_return_converter(full_name, returns)
 
         fields = [x.strip() for x in full_name.split('.')]
         function_name = fields.pop()
         module, cls = self.clinic._module_and_class(fields)
 
-        if self.kind in {GETTER, SETTER}:
-            if not cls:
-                fail("@getter and @setter must be methods")
+        func = Function(
+            name=function_name,
+            full_name=full_name,
+            module=module,
+            cls=cls,
+            c_basename=c_basename,
+            return_converter=return_converter,
+            kind=self.kind,
+            coexist=self.coexist,
+            critical_section=self.critical_section,
+            target_critical_section=self.target_critical_section
+        )
+        self.add_function(func)
 
-        self.update_function_kind(full_name)
-        if self.kind is METHOD_INIT and not return_converter:
-            return_converter = init_return_converter()
-
-        if not return_converter:
-            return_converter = CReturnConverter()
-
-        self.function = Function(name=function_name, full_name=full_name, module=module, cls=cls, c_basename=c_basename,
-                                 return_converter=return_converter, kind=self.kind, coexist=self.coexist,
-                                 critical_section=self.critical_section,
-                                 target_critical_section=self.target_critical_section)
-        self.block.signatures.append(self.function)
-
-        # insert a self converter automatically
-        type, name = correct_name_for_self(self.function)
-        kwargs = {}
-        if cls and type == "PyObject *":
-            kwargs['type'] = cls.typedef
-        sc = self.function.self_converter = self_converter(name, name, self.function, **kwargs)
-        p_self = Parameter(name, inspect.Parameter.POSITIONAL_ONLY,
-                           function=self.function, converter=sc)
-        self.function.parameters[name] = p_self
-
-        (cls or module).functions.append(self.function)
         self.next(self.state_parameters_start)
+
+    def add_function(self, func: Function) -> None:
+        # Insert a self converter automatically.
+        tp, name = correct_name_for_self(func)
+        if func.cls and tp == "PyObject *":
+            func.self_converter = self_converter(name, name, func,
+                                                 type=func.cls.typedef)
+        else:
+            func.self_converter = self_converter(name, name, func)
+        func.parameters[name] = Parameter(
+            name,
+            inspect.Parameter.POSITIONAL_ONLY,
+            function=func,
+            converter=func.self_converter
+        )
+
+        self.block.signatures.append(func)
+        self.function = func
+        (func.cls or func.module).functions.append(func)
 
     # Now entering the parameters section.  The rules, formally stated:
     #
