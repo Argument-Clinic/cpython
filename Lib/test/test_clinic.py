@@ -1219,19 +1219,20 @@ class ClinicParserTest(TestCase):
         self.assertEqual(function.c_basename, "foo")
 
     def test_return_converter_invalid_syntax(self):
-        block = """
-            module os
-            os.stat -> invalid syntax
-        """
-        err = "Badly formed annotation for 'os.stat': 'invalid syntax'"
-        self.expect_failure(block, err)
+        err = "Return annotation arguments must be parenthesised"
+        for block in (
+            "fn -> conv args",
+            "fn as c -> conv args",
+        ):
+            with self.subTest(block=block):
+                self.expect_failure(block, err)
 
     def test_legacy_converter_disallowed_in_return_annotation(self):
         block = """
             module os
             os.stat -> "s"
         """
-        err = "Legacy converter 's' not allowed as a return converter"
+        err = "Invalid syntax"
         self.expect_failure(block, err)
 
     def test_unknown_return_converter(self):
@@ -1565,7 +1566,6 @@ class ClinicParserTest(TestCase):
         err = "Illegal C basename"
         for block in (
             "foo as 935",
-            "foo as ''",
             "foo as a.c",
         ):
             with self.subTest(block=block):
@@ -1574,8 +1574,8 @@ class ClinicParserTest(TestCase):
     def test_illegal_cloned_name(self):
         err = "Illegal source function name"
         for block in (
-            "foo = 935",
-            "foo = ''",
+            "foo = 9a5",
+            "foo = 9",
         ):
             with self.subTest(block=block):
                 self.expect_failure(block, err)

@@ -50,13 +50,8 @@ from typing import (
 # Local imports.
 import libclinic
 import libclinic.cpp
+import libclinic.parser
 from libclinic import ClinicError
-from libclinic.parser import (
-    RE_CLONE,
-    RE_C_BASENAME,
-    RE_FULLNAME,
-    RE_RETURNS,
-)
 
 
 # TODO:
@@ -5073,8 +5068,6 @@ class DSLParser:
         self, full_name: str, forced_converter: str | None
     ) -> CReturnConverter:
         if forced_converter:
-            if self.kind in {GETTER, SETTER}:
-                fail(f"@{self.kind.name.lower()} method cannot define a return type")
             ast_input = f"def x() -> {forced_converter}: pass"
             try:
                 module_node = ast.parse(ast_input)
@@ -5153,8 +5146,9 @@ class DSLParser:
     def parse_declaration(
         self, line: str
     ) -> tuple[str, str, str | None, str | None]:
-        cloned = None
-        returns = None
+        cloned: str | None = None
+        returns: str | None = None
+        c_basename: str | None = None
 
         def invalid_syntax(msg: str | None = None) -> NoReturn:
             preamble = "Invalid syntax"
@@ -5165,44 +5159,51 @@ class DSLParser:
                  "[module.[submodule.]][class.]func [as c_name] [-> return_annotation]\n\n"
                  "Nested submodules are allowed.")
 
-        m = RE_FULLNAME.match(line)
-        assert m
-        full_name = m[1]
+        try:
+            tokens = [t for t in libclinic.parser.tokenize(line)]
+        except ClinicError as exc:
+            invalid_syntax(str(exc))
+
+        match [t.value for t in tokens]:
+            case [full_name]: ...
+            case [full_name, "as", c_basename]: ...
+            # With return annotation
+            case [full_name, "->", returns]: ...
+            case [full_name, "->", returns, args]:
+                if tokens[-1].kind != "ARGS":
+                    fail("Return annotation arguments must be parenthesised")
+                returns += args
+            # With C basename and return annotation
+            case [full_name, "as", c_basename, "->", returns]: ...
+            case [full_name, "as", c_basename, "->", returns, args]:
+                if tokens[-1].kind != "ARGS":
+                    fail("Return annotation arguments must be parenthesised")
+                returns += args
+            # Cloning
+            case [full_name, "=", cloned]: ...
+            case [full_name, "as", c_basename, "=", cloned]: ...
+
+            # Invalid syntax
+            case [full_name, "as"] | [full_name, "as", "->" | "=", *_]:
+                fail(f"No C basename provided for {full_name!r} after 'as' keyword")
+            case [full_name, "="] | [full_name, "as", _, "="]:
+                fail(f"No source function provided for {full_name!r} after '=' keyword")
+            case [full_name, "->"] | [full_name, "as", _, "->"]:
+                fail(f"No return annotation provided for {full_name!r} after '->' keyword")
+            case _:
+                invalid_syntax()
+
+        # Validate identifiers.
         if not libclinic.is_legal_py_identifier(full_name):
             fail(f"Illegal function name: {full_name!r}")
-        pos = m.end()
-
-        m = RE_C_BASENAME.match(line, pos)
-        if m:
-            if not m[1]:
-                fail(f"No C basename provided for {full_name!r} after 'as' keyword")
-            c_basename = m[1]
-            if not libclinic.is_legal_c_identifier(c_basename):
-                fail(f"Illegal C basename: {c_basename!r}")
-            pos = m.end()
-        else:
+        if c_basename is None:
             c_basename = self.generate_c_basename(full_name)
-
-        m = RE_CLONE.match(line, pos)
-        if m:
-            if not m[1]:
-                fail(f"No source function provided for {full_name!r} after '=' keyword")
-            cloned = m[1]
-            if not libclinic.is_legal_py_identifier(cloned):
-                fail(f"Illegal source function name: {cloned!r}")
-            pos = m.end()
-
-        m = RE_RETURNS.match(line, pos)
-        if m:
-            if cloned:
-                invalid_syntax()
-            if not m[1]:
-                fail(f"No return annotation provided for {full_name!r} after '->' keyword")
-            returns = m[1].strip()
-            pos = m.end()
-
-        if pos != len(line):
-            invalid_syntax()
+        if not libclinic.is_legal_c_identifier(c_basename):
+            fail(f"Illegal C basename: {c_basename!r}")
+        if cloned is not None and not libclinic.is_legal_py_identifier(cloned):
+            fail(f"Illegal source function name: {cloned!r}")
+        if self.kind in {GETTER, SETTER} and returns:
+            fail(f"@{self.kind.name.lower()} method cannot define a return type")
 
         self.normalize_function_kind(full_name)
         return full_name, c_basename, cloned, returns
